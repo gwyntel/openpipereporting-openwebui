@@ -1,7 +1,7 @@
 """
 title: OpenPipe DPO Reject Response
 author: Cline & Gwyn
-version: 1.5.0
+version: 1.6.1
 required_open_webui_version: 0.5.0
 icon_url: data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KICA8Y2lyY2xlIGN4PSIxMiIgY3k9IjEyIiByPSIxMCIgZmlsbD0iI0RDMjYyNiIgc3Ryb2tlPSIjQjkxQzFDIiBzdHJva2Utd2lkdGg9IjIiLz4KICA8cGF0aCBkPSJtOSA5IDYgNm0wLTYtNiA2IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPgo8L3N2Zz4K
 """

@@ -1,7 +1,7 @@
 """
 title: OpenPipe DPO Accept Response
 author: Cline & Gwyn
-version: 1.5.0
+version: 1.6.1
 required_open_webui_version: 0.5.0
 icon_url: data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KICA8Y2lyY2xlIGN4PSIxMiIgY3k9IjEyIiByPSIxMCIgZmlsbD0iIzAwODAwMCIgc3Ryb2tlPSIjMDA2MDAwIiBzdHJva2Utd2lkdGg9IjIiLz4KICA8cGF0aCBkPSJtOSAxMiAyIDIgNC00IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPgo8L3N2Zz4K
 """
@@ -413,7 +413,8 @@ class Action:
                 # Import the reject action's storage
                 from openpipe_dpo_reject_action import _rejected_responses
                 if pairing_key in _rejected_responses:
-                    rejected_response = _rejected_responses[pairing_key]
+                    rejected_data = _rejected_responses[pairing_key]
+                    rejected_response = rejected_data["response"]
                     self._log(f"Found matching rejected response for pairing key: {pairing_key}", "DEBUG")
             except ImportError:
                 self._log("Could not import reject action storage, checking via events", "DEBUG")
@@ -480,8 +481,8 @@ class Action:
                     await __event_emitter__({
                         "type": "dpo:cleanup",
                         "data": {
-                            "chat_id": chat_id,
-                            "context_hash": hash(str(context_messages))
+                            "pairing_key": pairing_key,
+                            "user_message": user_message_str[:50]
                         }
                     })
                 
@@ -525,14 +526,14 @@ class Action:
                     await __event_emitter__({
                         "type": "dpo:pair_complete",
                         "data": {
-                            "chat_id": chat_id,
+                            "pairing_key": pairing_key,
                             "dataset_name": dataset['name'],
                             "entries_created": entries_created,
                             "success": True
                         }
                     })
                 
-                self._log(f"Successfully sent complete DPO pair for chat {chat_id}", "INFO")
+                self._log(f"Successfully sent complete DPO pair for pairing key {pairing_key}", "INFO")
                 return success_msg
             
             else:
@@ -552,15 +553,15 @@ class Action:
                     await __event_emitter__({
                         "type": "dpo:waiting_for_reject",
                         "data": {
-                            "chat_id": chat_id,
+                            "pairing_key": pairing_key,
                             "has_accepted": True,
                             "has_rejected": False,
                             "timestamp": asyncio.get_event_loop().time()
                         }
                     })
                 
-                self._log(f"Stored accepted response for chat {chat_id}, waiting for rejected", "INFO")
-                await self._emit_debug_event(__event_emitter__, f"Waiting for rejected response for chat {chat_id}")
+                self._log(f"Stored accepted response for pairing key {pairing_key}, waiting for rejected", "INFO")
+                await self._emit_debug_event(__event_emitter__, f"Waiting for rejected response for pairing key {pairing_key}")
                 
                 return waiting_msg
             
