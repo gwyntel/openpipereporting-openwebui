@@ -1,0 +1,20 @@
+{
+  "_comment": "OpenPipe Reporting Filter - Example Configuration",
+  "_instructions": "Copy these settings to your filter configuration in OpenWebUI Admin Settings → Filters",
+  
+  "OPENPIPE_API_KEY": "your-openpipe-api-key-here",
+  "OPENPIPE_BASE_URL": "https://api.openpipe.ai/api/v1",
+  "ENABLED": true,
+  
+  "INCLUDE_TOOL_METRICS": true,
+  "INCLUDE_TIMING_METRICS": true,
+  "INCLUDE_INTERACTION_CLASSIFICATION": true,
+  
+  "REPORT_CHAT_MESSAGES": true,
+  "REPORT_SYSTEM_TASKS": true,
+  "REPORT_TOOL_INTERACTIONS": true,
+  
+  "DEBUG_LOGGING": false,
+  "CUSTOM_METADATA": "{}",
+  "TIMEOUT_SECONDS": 10
+}
