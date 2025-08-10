@@ -1,179 +1,218 @@
-# OpenPipe Reporting Filter for OpenWebUI
+# OpenPipe Integration for OpenWebUI
 
-A comprehensive filter for OpenWebUI that automatically reports all AI interactions to OpenPipe for detailed analytics and monitoring.
+A comprehensive OpenPipe integration suite for OpenWebUI that provides both real-time conversation reporting and dataset collection for AI model training and analytics.
 
-## Features
+## 🚀 Overview
 
-### 📊 Comprehensive Reporting
-- **Interaction Classification**: Automatically detects and reports different types of AI interactions:
-  - Regular chat messages
-  - System tasks (title generation, tags, follow-ups, etc.)
-  - Tool/function calling interactions
-  - Image prompt generation
-  - Query optimization
-  - And more...
+This integration consists of two complementary components:
 
-### ⚡ Performance Tracking
-- **Precise Inference Timing**: Measures exact time from request to response
-- **Tool Usage Analytics**: Tracks which tools are used, how often, and success rates
-- **Model Performance**: Compare performance across different models and providers
+1. **OpenPipe Universal Reporting Filter (v3.0)** - Automatic real-time reporting of all AI interactions
+2. **OpenPipe Dataset Action (v1.1)** - Manual collection of conversations for training datasets
 
-### 🔧 Smart Detection
-- **Zero Content Analysis**: Uses OpenWebUI's built-in metadata for efficient classification
-- **Universal Format Support**: Works with all models since OpenWebUI normalizes to OpenAI format
-- **Tool Call Extraction**: Identifies and reports function/tool usage patterns
+## 📦 Components
 
-### ⚙️ Flexible Configuration
-- **Selective Reporting**: Choose which interaction types to report
-- **Custom Metadata**: Add your own metadata fields
-- **Debug Mode**: Detailed logging for troubleshooting
-- **Timeout Control**: Configurable API timeout settings
+### 1. OpenPipe Universal Reporting Filter (`openpipe_filter_v3.py`)
 
-## Installation
+The main reporting component that automatically captures all AI interactions and sends them to OpenPipe for analytics and monitoring.
 
-### Option 1: Docker Volume Mount (Recommended)
+**Key Features:**
+- ✅ **Universal Model Support**: Works with ALL models (OpenAI, Anthropic, local models, etc.)
+- 🎛️ **UI Toggle Control**: Easy on/off switch directly in the OpenWebUI interface
+- 📊 **Real-time Feedback**: Live status updates during reporting process
+- 🔍 **Enhanced Analytics**: Comprehensive interaction classification and metrics
+- 🛠️ **Tool Usage Tracking**: Detailed function/tool call monitoring
+- ⏱️ **Timing Metrics**: Inference time measurements
+- 🎨 **Custom OpenPipe Icon**: Visual indicator in the UI
+- 📝 **Raw Response Capture**: Preserves complete conversation data
+- 🎯 **DPO Detection**: Identifies message regeneration for preference optimization
 
-If you're running OpenWebUI in Docker with a data directory already mounted:
+### 2. OpenPipe Dataset Action (`openpipe_dataset_action.py`)
 
-1. **Copy the filter to your mounted data directory**:
-   ```bash
-   # If your data directory is mounted at ./open-webui-data
-   mkdir -p ./open-webui-data/functions
-   cp openpipe_reporting_filter.py ./open-webui-data/functions/
-   ```
+An action component that allows users to manually add conversations to OpenPipe datasets for training purposes.
 
-2. **Your Docker setup should look like**:
-   ```bash
-   docker run -d \
-     -p 3000:8080 \
-     -v ./open-webui-data:/app/backend/data \
-     --name open-webui \
-     ghcr.io/open-webui/open-webui:main
-   ```
+**Key Features:**
+- 📚 **Training Data Collection**: Add conversations to OpenPipe datasets for fine-tuning
+- 🎭 **Multimodal Support**: Handles text, images, audio, and tool interactions
+- 🆕 **Auto Dataset Creation**: Automatically creates datasets when needed
+- ⚙️ **Flexible Configuration**: Customizable dataset names and splits
+- 🏷️ **Metadata Preservation**: Maintains conversation context and user information
+- 🔧 **Tool Call Preservation**: Maintains function calls and responses for training
 
-   Or in `docker-compose.yml`:
-   ```yaml
-   services:
-     open-webui:
-       image: ghcr.io/open-webui/open-webui:main
-       ports:
-         - "3000:8080"
-       volumes:
-         - ./open-webui-data:/app/backend/data
-   ```
+## 🛠️ Installation
 
-3. **Activate the filter**:
-   - Go to Admin Settings → Functions
-   - The "OpenPipe Reporting Filter" should appear
-   - Toggle it on and configure your API key
+### Prerequisites
+- OpenWebUI v0.5.0 or higher
+- OpenPipe API account and API key
+- Python environment with required dependencies
 
-### Option 1b: If You Don't Have Functions Directory Yet
+### Setup Steps
 
-If you already have data mounted but no functions directory:
+1. **Install the Filter**
+   - Navigate to **Admin → Settings → Functions**
+   - Click **"+"** to add a new function
+   - Upload or paste `openpipe_filter_v3.py`
+   - The filter will appear as "OpenPipe Universal Reporting (Raw Output Capture)"
 
-1. **Create the functions directory and copy the filter**:
-   ```bash
-   # Replace ./your-data-dir with your actual mounted data directory path
-   mkdir -p ./your-data-dir/functions
-   cp openpipe_reporting_filter.py ./your-data-dir/functions/
-   ```
+2. **Install the Action**
+   - Navigate to **Admin → Settings → Functions**
+   - Click **"+"** to add a new function
+   - Upload or paste `openpipe_dataset_action.py`
+   - The action will appear as "OpenPipe Dataset Collection (Training Data)"
 
-2. **Restart OpenWebUI** to detect the new function:
-   ```bash
-   docker restart open-webui
-   ```
+3. **Configure API Keys**
+   - Go to **Settings → Functions → OpenPipe Universal Reporting**
+   - Enter your OpenPipe API key in the `OPENPIPE_API_KEY` field
+   - Go to **Settings → Functions → OpenPipe Dataset Collection**
+   - Enter your OpenPipe API key in the `OPENPIPE_API_KEY` field
 
-### Option 2: Direct Upload
+## ⚙️ Configuration
 
-1. **Upload via Web Interface**:
-   - Go to Admin Settings → Functions
-   - Click "+" to add a new function
-   - Upload `openpipe_reporting_filter.py`
-   - The filter will appear as "OpenPipe Reporting Filter"
+### Filter Configuration (Valves)
 
-### Option 3: Manual Installation
-
-1. **Copy the filter file** to your OpenWebUI functions directory:
-   ```bash
-   # For local installation
-   cp openpipe_reporting_filter.py /path/to/your/openwebui/backend/data/functions/
-   
-   # For Docker (exec into container)
-   docker cp openpipe_reporting_filter.py open-webui:/app/backend/data/functions/
-   ```
-
-## Configuration
-
-### Required Settings
-1. **OPENPIPE_API_KEY**: Your OpenPipe API key (get it from [OpenPipe Dashboard](https://app.openpipe.ai))
-2. **ENABLED**: Set to `true` to activate reporting
-
-### Core Configuration Options
-
+#### Core Settings
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `OPENPIPE_API_KEY` | `""` | Your OpenPipe API authentication key |
-| `OPENPIPE_BASE_URL` | `https://api.openpipe.ai/api/v1` | OpenPipe API base URL |
-| `ENABLED` | `true` | Master switch to enable/disable reporting |
+| `OPENPIPE_BASE_URL` | `https://api.openpipe.ai/api/v1` | OpenPipe API endpoint |
 
-### Feature Toggles
-
+#### Feature Toggles
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `INCLUDE_TOOL_METRICS` | `true` | Track and report tool usage analytics |
-| `INCLUDE_TIMING_METRICS` | `true` | Include precise inference timing data |
+| `INCLUDE_TOOL_METRICS` | `true` | Track function/tool usage analytics |
+| `INCLUDE_TIMING_METRICS` | `true` | Measure inference timing |
 | `INCLUDE_INTERACTION_CLASSIFICATION` | `true` | Classify interaction types |
 
-### Selective Reporting
-
+#### Selective Reporting
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `REPORT_CHAT_MESSAGES` | `true` | Report regular user-AI conversations |
-| `REPORT_SYSTEM_TASKS` | `true` | Report system tasks (title gen, etc.) |
-| `REPORT_TOOL_INTERACTIONS` | `true` | Report tool/function calling interactions |
+| `REPORT_CHAT_MESSAGES` | `true` | Report regular conversations |
+| `REPORT_SYSTEM_TASKS` | `true` | Report system tasks (title generation, etc.) |
+| `REPORT_TOOL_INTERACTIONS` | `true` | Report function/tool calling |
 
-### Advanced Settings
-
+#### DPO Configuration
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `DEBUG_LOGGING` | `false` | Enable detailed console logging |
+| `ENABLE_DPO_DETECTION` | `true` | Detect message regeneration for DPO pairs |
+| `AUTO_SUBMIT_DPO_PAIRS` | `false` | Auto-submit DPO pairs to OpenPipe |
+| `DPO_DATASET_NAME` | `"OpenWebUI DPO Training"` | Dataset name for DPO pairs |
+
+#### Advanced Options
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `DEBUG_LOGGING` | `false` | Enable detailed debug output |
 | `CUSTOM_METADATA` | `"{}"` | Additional metadata as JSON string |
 | `TIMEOUT_SECONDS` | `10` | API request timeout |
 
-## Interaction Types Detected
+### Dataset Action Configuration
 
-The filter automatically classifies interactions using OpenWebUI's built-in system:
+#### Core Settings
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `OPENPIPE_API_KEY` | `""` | Your OpenPipe API authentication key |
+| `OPENPIPE_BASE_URL` | `https://api.openpipe.ai/api/v1` | OpenPipe API endpoint |
+| `DEFAULT_DATASET_NAME` | `"OpenWebUI Conversations"` | Default dataset name |
+| `DEFAULT_SPLIT` | `"TRAIN"` | Default split (TRAIN or TEST) |
+
+#### Feature Settings
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `AUTO_CREATE_DATASET` | `true` | Auto-create dataset if it doesn't exist |
+| `INCLUDE_SYSTEM_MESSAGES` | `true` | Include system messages in datasets |
+| `DEBUG_LOGGING` | `false` | Enable debug logging |
+
+## 🎯 Usage
+
+### Automatic Reporting (Filter)
+
+Once installed and configured, the filter automatically:
+
+1. **Captures all interactions** - Every chat message, tool call, and system task
+2. **Provides real-time feedback** - Shows reporting status in the UI
+3. **Classifies interactions** - Identifies chat messages, function calls, system tasks
+4. **Measures performance** - Tracks inference timing and tool usage
+5. **Reports to OpenPipe** - Sends structured data for analytics
+
+**UI Controls:**
+- **Toggle Switch**: Enable/disable reporting without configuration changes
+- **Status Updates**: Real-time feedback during the reporting process
+- **Custom Icon**: OpenPipe branding in the interface
+
+### Manual Dataset Collection (Action)
+
+To add a conversation to a training dataset:
+
+1. **During or after a conversation**, click the action button
+2. **Select "OpenPipe Dataset Collection"** from the actions menu
+3. **The action will**:
+   - Extract all messages from the conversation
+   - Preserve multimodal content (images, audio, tool calls)
+   - Add metadata (user ID, model, timestamp, etc.)
+   - Create the dataset if it doesn't exist
+   - Add the conversation as a training entry
+
+## 📊 Interaction Types Detected
+
+The filter automatically classifies interactions:
 
 ### System Tasks
-- `title_generation`: Auto-generated chat titles
-- `follow_up_generation`: Follow-up question suggestions
-- `tags_generation`: Chat categorization tags
-- `emoji_generation`: Emoji suggestions
-- `query_generation`: Search/retrieval query optimization
-- `image_prompt_generation`: Image generation prompt enhancement
-- `autocomplete_generation`: Text autocompletion
-- `moa_response_generation`: Mixture of Agents responses
+- `title_generation` - Auto-generated chat titles
+- `follow_up_generation` - Follow-up question suggestions
+- `tags_generation` - Chat categorization tags
+- `emoji_generation` - Emoji suggestions
+- `query_generation` - Search/retrieval query optimization
+- `image_prompt_generation` - Image generation prompt enhancement
+- `autocomplete_generation` - Text autocompletion
+- `moa_response_generation` - Mixture of Agents responses
 
 ### User Interactions
-- `chat_message`: Regular user conversations
-- `function_calling`: Tool/function usage
+- `chat_message` - Regular user conversations
+- `function_calling` - Tool/function usage
 
-## Reported Data Structure
+## 📈 Analytics Capabilities
 
-Each interaction sends the following data to OpenPipe:
+### Performance Metrics
+- Average inference times by model and interaction type
+- Tool usage patterns and success rates
+- Response quality metrics across different models
 
+### Usage Patterns
+- Most frequently used system features
+- Tool adoption and usage trends
+- User behavior analysis and conversation patterns
+
+### Training Data Quality
+- Conversation length and complexity analysis
+- Multimodal content distribution
+- Tool interaction patterns for training
+
+## 🔧 Data Structures
+
+### Filter Reporting Format
 ```json
 {
   "requestedAt": 1673123456789,
   "receivedAt": 1673123457890,
-  "reqPayload": { /* Original request */ },
-  "respPayload": { /* AI response */ },
+  "reqPayload": {
+    "model": "gpt-4",
+    "messages": [...],
+    "tools": [...]
+  },
+  "respPayload": {
+    "id": "chatcmpl-123",
+    "object": "chat.completion",
+    "choices": [{
+      "message": {
+        "role": "assistant",
+        "content": "Response text",
+        "tool_calls": [...]
+      }
+    }]
+  },
   "statusCode": 200,
   "metadata": {
-    "interaction_type": "chat_message",
-    "inference_time_ms": 1101,
+    "interaction_type": "function_calling",
+    "inference_time_ms": 1250,
     "tools_used": ["search", "calculator"],
-    "tool_call_count": 2,
     "has_tool_calls": true,
     "user_id": "user123",
     "chat_id": "chat456"
@@ -181,98 +220,186 @@ Each interaction sends the following data to OpenPipe:
 }
 ```
 
-## Analytics Capabilities
-
-With this data in OpenPipe, you can analyze:
-
-### Performance Metrics
-- Average inference times by model
-- Performance differences between interaction types
-- Tool usage impact on response times
-
-### Usage Patterns
-- Most frequently used system features
-- Tool adoption and usage patterns
-- User behavior analysis
-
-### Model Comparison
-- Performance benchmarking across models
-- Tool compatibility across providers
-- Cost analysis per interaction type
-
-## Examples
-
-### Basic Configuration
+### Dataset Entry Format
 ```json
 {
-  "OPENPIPE_API_KEY": "your-api-key-here",
-  "ENABLED": true,
-  "DEBUG_LOGGING": false
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "What's in this image?"},
+        {"type": "image_url", "image_url": {"url": "data:image/..."}}
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": "I can see...",
+      "tool_calls": [...]
+    }
+  ],
+  "split": "TRAIN",
+  "metadata": {
+    "source": "openwebui",
+    "user_id": "user123",
+    "model": "gpt-4-vision",
+    "timestamp": "1673123456789"
+  }
 }
 ```
 
-### Development/Testing Setup
-```json
-{
-  "OPENPIPE_API_KEY": "your-api-key-here",
-  "ENABLED": true,
-  "DEBUG_LOGGING": true,
-  "REPORT_SYSTEM_TASKS": false,
-  "CUSTOM_METADATA": "{\"environment\": \"development\"}"
-}
-```
+## 🎭 Multimodal Support
 
-### Production with Custom Metadata
-```json
-{
-  "OPENPIPE_API_KEY": "your-api-key-here",
-  "ENABLED": true,
-  "CUSTOM_METADATA": "{\"deployment\": \"production\", \"version\": \"2.1.0\"}"
-}
-```
+Both components fully support multimodal interactions:
 
-## Troubleshooting
+### Supported Content Types
+- **Text**: Regular chat messages and responses
+- **Images**: Image URLs, base64 data, file uploads
+- **Audio**: Audio files and transcriptions
+- **Tool Calls**: Function calls and responses
+- **Mixed Content**: Combinations of text, images, and tool usage
+
+### Preservation Features
+- **Raw Content**: Maintains original format and structure
+- **Metadata**: Preserves content type, size, and format information
+- **Tool Context**: Keeps function definitions and call results
+- **Conversation Flow**: Maintains message order and relationships
+
+## 🔍 Troubleshooting
 
 ### Enable Debug Logging
-Set `DEBUG_LOGGING` to `true` to see detailed logs in the console:
+Set `DEBUG_LOGGING` to `true` in both components to see detailed logs:
+
+**Filter Logs:**
 ```
-[OpenPipe Filter INFO] Captured request 1673123456_12345 - Type: chat_message
-[OpenPipe Filter INFO] Sending report to OpenPipe: report
-[OpenPipe Filter INFO] Successfully reported to OpenPipe
+[OpenPipe Filter v3.0 INFO] Captured request 1673123456_12345 - Type: chat_message
+[OpenPipe Filter v3.0 INFO] Preparing to send report to OpenPipe
+[OpenPipe Filter v3.0 INFO] ✅ Successfully reported to OpenPipe
+```
+
+**Dataset Action Logs:**
+```
+[OpenPipe Dataset Action INFO] Detected multimodal content: 2 images, 1 tool calls
+[OpenPipe Dataset Action INFO] Created new dataset: OpenWebUI Conversations
+[OpenPipe Dataset Action INFO] Successfully added 1 entries to dataset
 ```
 
 ### Common Issues
 
-1. **No reports appearing**: Check that `ENABLED` is `true` and `OPENPIPE_API_KEY` is set
-2. **API errors**: Verify your API key is correct and has proper permissions
+#### Filter Issues
+1. **No reports appearing**: Check toggle is enabled and API key is set
+2. **API errors**: Verify API key permissions and network connectivity
 3. **Missing tool data**: Ensure `INCLUDE_TOOL_METRICS` is enabled
-4. **Timing issues**: Check that `INCLUDE_TIMING_METRICS` is enabled
+4. **UI feedback not showing**: Check OpenWebUI version compatibility
 
-### API Endpoint
-The filter uses OpenPipe's `/report` endpoint since OpenWebUI standardizes all models to OpenAI format internally.
+#### Dataset Action Issues
+1. **Dataset creation fails**: Verify API key has dataset creation permissions
+2. **Multimodal content missing**: Check `INCLUDE_SYSTEM_MESSAGES` setting
+3. **Action not appearing**: Ensure action is properly installed and enabled
+4. **Empty conversations**: Check that conversation has valid messages
 
-## Performance Considerations
+### Performance Considerations
 
-- **Asynchronous Reporting**: API calls don't block chat responses
-- **Efficient Classification**: Uses OpenWebUI's existing metadata (no content analysis)
-- **Memory Management**: Request data is cleaned up after reporting
+- **Asynchronous Operations**: Both components use async processing
+- **Memory Management**: Request data is cleaned up after processing
 - **Error Handling**: Failures don't affect chat functionality
+- **Rate Limiting**: Built-in timeout and retry mechanisms
 
-## Security & Privacy
+## 🔒 Security & Privacy
 
-- **API Key Protection**: Store your OpenPipe API key securely
-- **Data Transmission**: All data is sent over HTTPS
-- **No Content Modification**: Filter only observes, never modifies conversations
-- **User Privacy**: Only reports data you configure (user IDs are optional)
+### Data Protection
+- **API Key Security**: Store OpenPipe API keys securely
+- **HTTPS Transmission**: All data sent over encrypted connections
+- **No Content Modification**: Components only observe, never modify conversations
+- **User Privacy**: User IDs and metadata are optional and configurable
 
-## Contributing
+### Compliance Considerations
+- **Data Retention**: Configure according to your organization's policies
+- **User Consent**: Inform users about data collection and reporting
+- **Regional Compliance**: Ensure compliance with local data protection laws
+- **Audit Trail**: Both components provide detailed logging for compliance
 
-To extend or modify the filter:
+## 🚀 Advanced Usage
 
-1. **Add new interaction types**: Update `_classify_interaction()` method
-2. **Add custom metadata**: Extend the metadata building logic
-3. **Support new providers**: Update `_determine_model_provider()` method
+### Custom Metadata Examples
 
-## License
+**Development Environment:**
+```json
+{
+  "CUSTOM_METADATA": "{\"environment\": \"development\", \"version\": \"3.0.0\", \"team\": \"ai-research\"}"
+}
+```
 
-This filter is provided as-is for integration with OpenWebUI and OpenPipe. Ensure compliance with your organization's data policies before deployment.
+**Production Deployment:**
+```json
+{
+  "CUSTOM_METADATA": "{\"deployment\": \"production\", \"region\": \"us-west-2\", \"instance_id\": \"web-01\"}"
+}
+```
+
+### Selective Reporting Strategies
+
+**Research Focus:**
+```json
+{
+  "REPORT_CHAT_MESSAGES": true,
+  "REPORT_SYSTEM_TASKS": false,
+  "REPORT_TOOL_INTERACTIONS": true
+}
+```
+
+**System Optimization:**
+```json
+{
+  "REPORT_CHAT_MESSAGES": false,
+  "REPORT_SYSTEM_TASKS": true,
+  "REPORT_TOOL_INTERACTIONS": false
+}
+```
+
+## 📚 Integration Examples
+
+### Training Pipeline Integration
+1. **Collect conversations** using the dataset action
+2. **Monitor performance** with the reporting filter
+3. **Analyze patterns** in OpenPipe dashboard
+4. **Fine-tune models** using collected datasets
+5. **Deploy improved models** back to OpenWebUI
+
+### Analytics Workflow
+1. **Automatic reporting** captures all interactions
+2. **Performance metrics** identify optimization opportunities
+3. **Usage patterns** inform feature development
+4. **Quality metrics** guide model selection
+
+## 🤝 Contributing
+
+To extend or modify the components:
+
+### Filter Extensions
+- **Add interaction types**: Update `_classify_interaction()` method
+- **Custom analytics**: Extend metadata building logic
+- **New providers**: Update model detection logic
+
+### Dataset Action Extensions
+- **Content processors**: Add support for new content types
+- **Metadata extractors**: Enhance conversation analysis
+- **Export formats**: Add support for different training formats
+
+## 📄 License
+
+This integration suite is provided as-is for use with OpenWebUI and OpenPipe. Ensure compliance with your organization's data policies and OpenPipe's terms of service before deployment.
+
+## 🆘 Support
+
+For issues and questions:
+1. **Check debug logs** with `DEBUG_LOGGING` enabled
+2. **Verify API keys** and permissions in OpenPipe dashboard
+3. **Test connectivity** to OpenPipe API endpoints
+4. **Review configuration** settings for both components
+
+---
+
+**Authors**: Cline (AI Assistant) & Gwyn (Human Collaborator)  
+**Version**: Filter v3.0.0, Dataset Action v1.1.0  
+**Created**: January 2025  
+**Updated**: January 2025
