@@ -1,8 +1,0 @@
-v1.2.1: Fixed UI issues for DPO actions
-
-- Centered the X icon in reject response SVG
-- Removed emojis from action titles for cleaner UI
-- Accept: 'OpenPipe DPO Accept Response'
-- Reject: 'OpenPipe DPO Reject Response'
-
-Still need to fix shared state issue between actions.
