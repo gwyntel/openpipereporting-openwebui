@@ -350,19 +350,34 @@ class Filter:
         except Exception as e:
             self._log(f"❌ Failed to report to OpenPipe: {str(e)}", "ERROR")
     
-    async def inlet(self, body: Dict[str, Any], __event_emitter__, user: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def inlet(self, body, __event_emitter__, user: Optional[Dict[str, Any]] = None):
         """
         Capture incoming request data and set up streaming monitoring
         
         Args:
-            body: Request payload
+            body: Request payload (could be dict or JSONResponse)
             __event_emitter__: Event emitter for UI feedback and streaming capture
             user: User information
             
         Returns:
             Unmodified request body
         """
-        self._log(f"🔥 INLET CALLED! Toggle: {self.toggle}, Body keys: {list(body.keys())}")
+        # Handle JSONResponse objects
+        if hasattr(body, 'body'):
+            # It's a JSONResponse, extract the actual body
+            import json
+            if hasattr(body.body, 'decode'):
+                body_dict = json.loads(body.body.decode())
+            else:
+                body_dict = body.body
+            self._log(f"🔥 INLET CALLED! Toggle: {self.toggle}, JSONResponse detected")
+        elif isinstance(body, dict):
+            body_dict = body
+            self._log(f"🔥 INLET CALLED! Toggle: {self.toggle}, Body keys: {list(body_dict.keys())}")
+        else:
+            # Fallback for other types
+            self._log(f"🔥 INLET CALLED! Toggle: {self.toggle}, Body type: {type(body)}")
+            body_dict = {}
         
         # Check if reporting is enabled via toggle
         if not self.toggle:
@@ -381,21 +396,22 @@ class Filter:
         
         # Store request data for later processing
         self.request_store[request_id] = {
-            "body": body.copy(),
+            "body": body_dict.copy() if isinstance(body_dict, dict) else body_dict,
             "user": user.copy() if user else None,
             "requested_at": int(time.time() * 1000),
             "start_time": time.perf_counter(),
-            "interaction_type": self._classify_interaction(body),
-            "tools_used": self._extract_tool_names(body),
+            "interaction_type": self._classify_interaction(body_dict),
+            "tools_used": self._extract_tool_names(body_dict),
         }
         
         # Set up streaming content capture
         await self._capture_streaming_content(__event_emitter__, request_id)
         
-        # Add our request ID to body metadata for tracking
-        if "metadata" not in body:
-            body["metadata"] = {}
-        body["metadata"]["openpipe_request_id"] = request_id
+        # Add our request ID to body metadata for tracking (only if it's a dict)
+        if isinstance(body, dict):
+            if "metadata" not in body:
+                body["metadata"] = {}
+            body["metadata"]["openpipe_request_id"] = request_id
         
         # Provide UI feedback
         interaction_type = self.request_store[request_id]['interaction_type']
@@ -465,19 +481,34 @@ class Filter:
         
         return raw_message
 
-    async def outlet(self, body: Dict[str, Any], __event_emitter__, user: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def outlet(self, body, __event_emitter__, user: Optional[Dict[str, Any]] = None):
         """
         Process completed response with raw formatting preservation and send to OpenPipe
         
         Args:  
-            body: Complete conversation body including response
+            body: Complete conversation body including response (could be dict or JSONResponse)
             __event_emitter__: Event emitter for UI feedback
             user: User information
             
         Returns:
             Unmodified body
         """
-        self._log(f"🔥 OUTLET CALLED! Toggle: {self.toggle}, Body keys: {list(body.keys())}")
+        # Handle JSONResponse objects
+        if hasattr(body, 'body'):
+            # It's a JSONResponse, extract the actual body
+            import json
+            if hasattr(body.body, 'decode'):
+                body_dict = json.loads(body.body.decode())
+            else:
+                body_dict = body.body
+            self._log(f"🔥 OUTLET CALLED! Toggle: {self.toggle}, JSONResponse detected")
+        elif isinstance(body, dict):
+            body_dict = body
+            self._log(f"🔥 OUTLET CALLED! Toggle: {self.toggle}, Body keys: {list(body_dict.keys())}")
+        else:
+            # Fallback for other types
+            self._log(f"🔥 OUTLET CALLED! Toggle: {self.toggle}, Body type: {type(body)}")
+            body_dict = {}
         
         # Check if reporting is enabled via toggle
         if not self.toggle:
@@ -485,7 +516,7 @@ class Filter:
             
         # Find the corresponding request data
         request_id = None
-        metadata = body.get("metadata", {})
+        metadata = body_dict.get("metadata", {})
         if "openpipe_request_id" in metadata:
             request_id = metadata["openpipe_request_id"]
         
@@ -528,7 +559,7 @@ class Filter:
                 return body
             
             # Extract raw response with formatting preservation
-            raw_response_message = self._extract_raw_response_content(body, request_id)
+            raw_response_message = self._extract_raw_response_content(body_dict, request_id)
             
             # Log capture statistics
             content_length = len(raw_response_message.get("content", ""))
