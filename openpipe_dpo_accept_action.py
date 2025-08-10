@@ -8,103 +8,11 @@ icon_url: data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdC
 
 import asyncio
 import json
-import os
-import time
-import threading
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel, Field
-from pathlib import Path
 
-# Embedded shared state management for DPO preference pairs
-class DPOSharedState:
-    """Thread-safe file-based shared state for DPO preference pairs"""
-    
-    def __init__(self, state_file: str = "dpo_pending_pairs.json"):
-        self.state_file = Path(state_file)
-        self._lock = threading.Lock()
-        self._ensure_state_file()
-    
-    def _ensure_state_file(self):
-        """Ensure the state file exists"""
-        if not self.state_file.exists():
-            self._write_state({})
-    
-    def _read_state(self) -> Dict[str, Any]:
-        """Read state from file with error handling"""
-        try:
-            if self.state_file.exists():
-                with open(self.state_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    # Clean up old entries (older than 24 hours)
-                    self._cleanup_old_entries(data)
-                    return data
-        except (json.JSONDecodeError, IOError) as e:
-            print(f"[DPO SharedState] Error reading state file: {e}")
-            # Return empty state if file is corrupted
-            return {}
-        return {}
-    
-    def _write_state(self, state: Dict[str, Any]):
-        """Write state to file with error handling"""
-        try:
-            # Write to temporary file first, then rename for atomicity
-            temp_file = self.state_file.with_suffix('.tmp')
-            with open(temp_file, 'w', encoding='utf-8') as f:
-                json.dump(state, f, indent=2, ensure_ascii=False)
-            temp_file.replace(self.state_file)
-        except IOError as e:
-            print(f"[DPO SharedState] Error writing state file: {e}")
-            raise
-    
-    def _cleanup_old_entries(self, state: Dict[str, Any]):
-        """Remove entries older than 24 hours"""
-        current_time = time.time()
-        cutoff_time = current_time - (24 * 60 * 60)  # 24 hours ago
-        
-        to_remove = []
-        for chat_id, data in state.items():
-            if isinstance(data, dict) and 'timestamp' in data:
-                if data['timestamp'] < cutoff_time:
-                    to_remove.append(chat_id)
-        
-        for chat_id in to_remove:
-            del state[chat_id]
-    
-    def get_pending_pair(self, chat_id: str) -> Optional[Dict[str, Any]]:
-        """Get pending pair data for a chat"""
-        with self._lock:
-            state = self._read_state()
-            return state.get(chat_id)
-    
-    def set_accepted_response(self, chat_id: str, context: list, response: Dict[str, Any]):
-        """Store accepted response for a chat"""
-        with self._lock:
-            state = self._read_state()
-            if chat_id not in state:
-                state[chat_id] = {
-                    "context": context,
-                    "timestamp": time.time()
-                }
-            state[chat_id]["accepted"] = response
-            self._write_state(state)
-    
-    def has_complete_pair(self, chat_id: str) -> bool:
-        """Check if a chat has both accepted and rejected responses"""
-        pending = self.get_pending_pair(chat_id)
-        if not pending:
-            return False
-        return "accepted" in pending and "rejected" in pending
-    
-    def remove_pair(self, chat_id: str):
-        """Remove a completed pair from state"""
-        with self._lock:
-            state = self._read_state()
-            if chat_id in state:
-                del state[chat_id]
-                self._write_state(state)
-
-# Global instance for shared use
-_shared_state = DPOSharedState()
+# Global storage for pending DPO pairs - using in-memory dict since events will coordinate
+_pending_pairs = {}
 
 class Action:
     """
@@ -362,7 +270,25 @@ class Action:
         Mark current response as ACCEPTED ✅ for DPO training
         """
         try:
-            shared_state = _shared_state
+            global _pending_pairs
+            
+            # Listen for rejected events from other actions
+            if __event_call__:
+                try:
+                    rejected_events = await __event_call__("dpo:rejected")
+                    if rejected_events:
+                        self._log(f"Received {len(rejected_events)} rejected events")
+                        for event in rejected_events:
+                            event_data = event.get("data", {})
+                            event_chat_id = event_data.get("chat_id")
+                            if event_chat_id and event_chat_id not in _pending_pairs:
+                                _pending_pairs[event_chat_id] = {
+                                    "context": event_data.get("context", []),
+                                    "rejected": event_data.get("response", {})
+                                }
+                                self._log(f"Added rejected response from event for chat {event_chat_id}")
+                except Exception as e:
+                    self._log(f"Error processing rejected events: {str(e)}", "WARNING")
             
             # Emit initial status
             if __event_emitter__:
@@ -389,12 +315,27 @@ class Action:
             if not chat_id:
                 return "❌ No chat ID found - cannot track preference pairs"
             
-            # Store this response in shared state
-            shared_state.set_accepted_response(chat_id, context_messages, assistant_response)
+            self._log(f"Storing accepted response for chat {chat_id}")
+            
+            # Store this response in pending pairs
+            if chat_id not in _pending_pairs:
+                _pending_pairs[chat_id] = {"context": context_messages}
+            _pending_pairs[chat_id]["accepted"] = assistant_response.copy()
+            
+            # Emit event to notify other actions about the accepted response
+            if __event_emitter__:
+                await __event_emitter__({
+                    "type": "dpo:accepted",
+                    "data": {
+                        "chat_id": chat_id,
+                        "context": context_messages,
+                        "response": assistant_response
+                    }
+                })
             
             # Check if we have both accepted and rejected responses
-            if shared_state.has_complete_pair(chat_id):
-                pending = shared_state.get_pending_pair(chat_id)
+            pending = _pending_pairs[chat_id]
+            if "accepted" in pending and "rejected" in pending:
                 # We have a complete pair! Send to OpenPipe
                 if __event_emitter__:
                     await __event_emitter__({
@@ -435,7 +376,7 @@ class Action:
                 errors = result.get("errors", {}).get("data", [])
                 
                 # Clean up pending pair
-                shared_state.remove_pair(chat_id)
+                del _pending_pairs[chat_id]
                 
                 if errors:
                     error_messages = [error.get("message", "Unknown error") for error in errors]
