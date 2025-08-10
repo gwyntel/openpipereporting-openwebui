@@ -1,7 +1,7 @@
 """
 title: OpenPipe DPO Accept Response
 author: Cline & Gwyn
-version: 1.2.0
+version: 1.5.0
 required_open_webui_version: 0.5.0
 icon_url: data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KICA8Y2lyY2xlIGN4PSIxMiIgY3k9IjEyIiByPSIxMCIgZmlsbD0iIzAwODAwMCIgc3Ryb2tlPSIjMDA2MDAwIiBzdHJva2Utd2lkdGg9IjIiLz4KICA8cGF0aCBkPSJtOSAxMiAyIDIgNC00IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPgo8L3N2Zz4K
 """
@@ -11,8 +11,8 @@ import json
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel, Field
 
-# Global storage for pending DPO pairs - using in-memory dict since events will coordinate
-_pending_pairs = {}
+# In-memory storage for accepted responses (event-based communication)
+_accepted_responses = {}
 
 class Action:
     """
@@ -20,6 +20,7 @@ class Action:
     
     Marks the current response as ACCEPTED/PREFERRED for DPO training.
     Works together with the Reject Response action to create preference pairs.
+    Uses pure event-based communication without global state.
     """
     
     class Valves(BaseModel):
@@ -67,15 +68,6 @@ class Action:
             if level == "ERROR":
                 print(f"[{timestamp}] [OpenPipe DPO Accept TRACE] {traceback.format_exc()}")
     
-    def _debug_pending_pairs(self):
-        """Debug helper to log current state of pending pairs"""
-        global _pending_pairs
-        self._log(f"Current pending pairs state: {json.dumps(_pending_pairs, indent=2, default=str)}", "DEBUG")
-        for chat_id, data in _pending_pairs.items():
-            has_accepted = "accepted" in data
-            has_rejected = "rejected" in data
-            self._log(f"Chat {chat_id}: accepted={has_accepted}, rejected={has_rejected}", "DEBUG")
-    
     async def _emit_debug_event(self, __event_emitter__, message: str, data: dict = None):
         """Emit debug notification event"""
         if __event_emitter__ and self.valves.DEBUG_LOGGING:
@@ -88,6 +80,35 @@ class Action:
             })
             if data:
                 self._log(f"Debug data: {json.dumps(data, indent=2, default=str)}", "DEBUG")
+    
+    async def _check_for_rejected_response(self, __event_call__, chat_id: str, context_messages: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Check if there's a rejected response for this chat via event call"""
+        if not __event_call__:
+            return None
+            
+        try:
+            self._log(f"Checking for rejected response for chat {chat_id}", "DEBUG")
+            
+            # Use event call to check for rejected response
+            result = await __event_call__({
+                "type": "dpo:check_rejected",
+                "data": {
+                    "chat_id": chat_id,
+                    "context_hash": hash(str(context_messages)),
+                    "requester": "accept_action"
+                }
+            })
+            
+            if result and isinstance(result, dict) and "rejected_response" in result:
+                self._log(f"Found rejected response for chat {chat_id}", "DEBUG")
+                return result["rejected_response"]
+            else:
+                self._log(f"No rejected response found for chat {chat_id}", "DEBUG")
+                return None
+                
+        except Exception as e:
+            self._log(f"Error checking for rejected response: {str(e)}", "DEBUG")
+            return None
     
     async def _make_api_request(self, method: str, endpoint: str, data: Dict = None) -> Dict[str, Any]:
         """Make authenticated request to OpenPipe API"""
@@ -292,11 +313,9 @@ class Action:
         Mark current response as ACCEPTED ✅ for DPO training
         """
         try:
-            global _pending_pairs
-            
             # Debug: Log action start
-            self._log("=== ACCEPT ACTION STARTED ===", "DEBUG")
-            await self._emit_debug_event(__event_emitter__, "Accept action started")
+            self._log("=== ACCEPT ACTION STARTED (Event-Based) ===", "DEBUG")
+            await self._emit_debug_event(__event_emitter__, "Accept action started (event-based)")
             
             # Debug: Log body structure (without sensitive data)
             debug_body = {
@@ -307,9 +326,6 @@ class Action:
                 "model": body.get("model", "unknown")
             }
             self._log(f"Request body structure: {json.dumps(debug_body, indent=2)}", "DEBUG")
-            
-            # Debug: Log current pending pairs state
-            self._debug_pending_pairs()
             
             # Emit initial status
             if __event_emitter__:
@@ -340,44 +356,45 @@ class Action:
                 await self._emit_debug_event(__event_emitter__, "No assistant response found")
                 return "❌ No assistant response found to mark as accepted"
             
-            # Get chat_id for tracking preference pairs
-            chat_id = body.get("metadata", {}).get("chat_id")
-            if not chat_id:
-                # Try alternative chat_id locations
-                chat_id = body.get("chat_id") or body.get("id")
-                self._log(f"No chat_id in metadata, trying alternatives: {chat_id}", "DEBUG")
+            # Create pairing key based on user's message content for more precise matching
+            user_message = None
+            for msg in context_messages:
+                if msg.get("role") == "user":
+                    user_message = msg.get("content", "")
+                    break
             
-            if not chat_id:
-                await self._emit_debug_event(__event_emitter__, "No chat ID found in any location")
-                return "❌ No chat ID found - cannot track preference pairs"
+            if not user_message:
+                await self._emit_debug_event(__event_emitter__, "No user message found for pairing")
+                return "❌ No user message found - cannot create preference pairs"
             
-            self._log(f"Processing chat_id: {chat_id}", "DEBUG")
-            await self._emit_debug_event(__event_emitter__, f"Processing chat {chat_id}")
+            # Create a hash of the user message for pairing
+            import hashlib
+            user_message_str = str(user_message) if isinstance(user_message, str) else str(user_message)
+            pairing_key = hashlib.md5(user_message_str.encode()).hexdigest()[:16]
             
-            # Store this response in pending pairs
-            if chat_id not in _pending_pairs:
-                _pending_pairs[chat_id] = {"context": context_messages}
-                self._log(f"Created new pending pair entry for chat {chat_id}", "DEBUG")
-            else:
-                self._log(f"Using existing pending pair entry for chat {chat_id}", "DEBUG")
-                
-            _pending_pairs[chat_id]["accepted"] = assistant_response.copy()
-            _pending_pairs[chat_id]["accepted_timestamp"] = asyncio.get_event_loop().time()
+            self._log(f"Processing pairing key: {pairing_key} (from user message: {user_message_str[:50]}...)", "DEBUG")
+            await self._emit_debug_event(__event_emitter__, f"Processing pairing key {pairing_key}")
             
-            # Debug: Log updated state
-            self._debug_pending_pairs()
+            # Store accepted response for direct lookup by reject action
+            global _accepted_responses
+            _accepted_responses[pairing_key] = {
+                "response": assistant_response.copy(),
+                "context": context_messages,
+                "timestamp": asyncio.get_event_loop().time()
+            }
             
-            # Emit multiple event types to maximize compatibility
+            self._log(f"Stored accepted response with pairing key: {pairing_key}", "DEBUG")
+            
+            # Emit accepted response event
             if __event_emitter__:
-                # Standard custom event
                 await __event_emitter__({
                     "type": "dpo:accepted",
                     "data": {
-                        "chat_id": chat_id,
+                        "pairing_key": pairing_key,
                         "action": "accepted",
                         "timestamp": asyncio.get_event_loop().time(),
-                        "context_length": len(context_messages),
-                        "response_preview": str(assistant_response.get("content", ""))[:100]
+                        "user_message": user_message_str[:100],
+                        "accepted_response": assistant_response
                     }
                 })
                 
@@ -386,30 +403,24 @@ class Action:
                     "type": "notification",
                     "data": {
                         "type": "success",
-                        "content": f"✅ Response accepted for chat {chat_id}"
+                        "content": f"✅ Response accepted for user message: {user_message_str[:50]}..."
                     }
                 })
-                
-                # Status update with detailed info
-                await __event_emitter__({
-                    "type": "status",
-                    "data": {
-                        "description": f"✅ Stored accepted response for chat {chat_id}",
-                        "done": False,
-                    },
-                })
             
-            # Check if we have both accepted and rejected responses
-            pending = _pending_pairs[chat_id]
-            has_accepted = "accepted" in pending
-            has_rejected = "rejected" in pending
+            # Check for existing rejected response by looking in reject action's storage
+            rejected_response = None
+            try:
+                # Import the reject action's storage
+                from openpipe_dpo_reject_action import _rejected_responses
+                if pairing_key in _rejected_responses:
+                    rejected_response = _rejected_responses[pairing_key]
+                    self._log(f"Found matching rejected response for pairing key: {pairing_key}", "DEBUG")
+            except ImportError:
+                self._log("Could not import reject action storage, checking via events", "DEBUG")
             
-            self._log(f"Pair status for chat {chat_id}: accepted={has_accepted}, rejected={has_rejected}", "DEBUG")
-            await self._emit_debug_event(__event_emitter__, f"Pair status: accepted={has_accepted}, rejected={has_rejected}")
-            
-            if has_accepted and has_rejected:
+            if rejected_response:
                 # We have a complete pair! Send to OpenPipe
-                self._log(f"Complete DPO pair found for chat {chat_id}!", "INFO")
+                self._log(f"Complete DPO pair found for pairing key {pairing_key}!", "INFO")
                 
                 if __event_emitter__:
                     await __event_emitter__({
@@ -434,22 +445,22 @@ class Action:
                 
                 # Prepare metadata
                 metadata = {
-                    "source": "openwebui_dpo_pairs",
+                    "source": "openwebui_dpo_pairs_user_message_based",
                     "user_id": __user__.get("id") if __user__ else None,
-                    "chat_id": chat_id,
+                    "pairing_key": pairing_key,
+                    "user_message_preview": user_message_str[:100],
                     "model": body.get("model", "unknown"),
                     "timestamp": str(int(body.get("timestamp", 0))),
                     "context_length": str(len(context_messages)),
                     "pair_complete": "true",
-                    "accepted_timestamp": str(pending.get("accepted_timestamp", 0)),
-                    "rejected_timestamp": str(pending.get("rejected_timestamp", 0))
+                    "communication_method": "user_message_pairing"
                 }
                 
                 # Create DPO entry with actual preference pair
                 dpo_entry = self._create_dpo_entry(
                     context_messages,
-                    pending["accepted"],  # preferred
-                    pending["rejected"],  # rejected
+                    assistant_response,  # preferred (accepted)
+                    rejected_response,   # rejected
                     metadata
                 )
                 
@@ -464,9 +475,15 @@ class Action:
                 
                 self._log(f"OpenPipe API result: {entries_created} entries created, {len(errors)} errors", "DEBUG")
                 
-                # Clean up pending pair
-                del _pending_pairs[chat_id]
-                self._log(f"Cleaned up pending pair for chat {chat_id}", "DEBUG")
+                # Emit cleanup event
+                if __event_emitter__:
+                    await __event_emitter__({
+                        "type": "dpo:cleanup",
+                        "data": {
+                            "chat_id": chat_id,
+                            "context_hash": hash(str(context_messages))
+                        }
+                    })
                 
                 if errors:
                     error_messages = [error.get("message", "Unknown error") for error in errors]
