@@ -112,8 +112,10 @@ class Filter:
     
     def _convert_thinking_to_openpipe_format(self, content: str) -> str:
         """
-        Convert content for OpenPipe by replacing <details> blocks with <think> tags
-        and removing <summary> content
+        Convert content for OpenPipe by:
+        1. Replacing <details type="reasoning"> blocks with <think> tags
+        2. Removing <details type="tool_calls"> blocks (since they'll be in tool_calls)
+        3. Removing <summary> content
         
         Returns:
             str: content formatted for OpenPipe
@@ -142,6 +144,11 @@ class Filter:
         # Replace <details type="reasoning" ...>...</details> with <think>...</think>
         details_pattern = r'<details[^>]*type="reasoning"[^>]*>(.*?)</details>'
         openpipe_content = re.sub(details_pattern, replace_details_with_think, content, flags=re.DOTALL)
+        
+        # Remove <details type="tool_calls" ...>...</details> blocks entirely
+        # (tool calls will be represented in the tool_calls field instead)
+        tool_calls_pattern = r'<details[^>]*type="tool_calls"[^>]*>.*?</details>'
+        openpipe_content = re.sub(tool_calls_pattern, '', openpipe_content, flags=re.DOTALL)
         
         # Clean up extra whitespace
         openpipe_content = re.sub(r'\n\s*\n\s*\n', '\n\n', openpipe_content)
@@ -173,37 +180,92 @@ class Filter:
         
         return cleaned_content
     
-    def _parse_tool_blocks(self, content: str) -> tuple[str, list]:
+    def _parse_tool_blocks(self, content: str) -> tuple[str, list, list]:
         """
-        Parse tool use blocks from content and extract metadata
+        Parse OpenWebUI tool call blocks and extract metadata
+        
+        OpenWebUI formats tool calls as:
+        <details type="tool_calls" done="true" id="tooluse_xxx" name="tool_name" arguments="..." result="..." files="">
+        <summary>Tool Executed</summary>
+        </details>
         
         Returns:
-            tuple: (content, tool_metadata)
+            tuple: (content, tool_metadata, tool_calls)
         """
         if not self.valves.ENABLE_PARSING:
-            return content, []
+            return content, [], []
             
         tool_metadata = []
+        tool_calls = []
         
-        # Pattern to match tool use blocks like <tool_name>...</tool_name>
-        tool_pattern = r'<(\w+)>\s*<(\w+)>(.*?)</\2>\s*</\1>'
+        # Pattern to match OpenWebUI tool call blocks
+        tool_pattern = r'<details[^>]*type="tool_calls"[^>]*?name="([^"]*)"[^>]*?arguments="([^"]*)"[^>]*?result="([^"]*)"[^>]*?id="([^"]*)"[^>]*?>(.*?)</details>'
         
-        def extract_tool_use(match):
+        def extract_openwebui_tool_call(match):
             tool_name = match.group(1)
-            param_name = match.group(2)
-            param_value = match.group(3).strip()
+            arguments_raw = match.group(2)
+            result_raw = match.group(3)
+            tool_id = match.group(4)
+            full_content = match.group(5)
             
-            tool_metadata.append({
-                "tool_name": tool_name,
-                "parameters": {param_name: param_value}
-            })
+            try:
+                # Decode HTML entities and parse JSON arguments
+                import html
+                arguments_decoded = html.unescape(arguments_raw)
+                result_decoded = html.unescape(result_raw)
+                
+                # Parse arguments JSON
+                try:
+                    arguments_json = json.loads(arguments_decoded)
+                except json.JSONDecodeError:
+                    arguments_json = {"raw_arguments": arguments_decoded}
+                
+                # Parse result JSON
+                try:
+                    result_json = json.loads(result_decoded)
+                except json.JSONDecodeError:
+                    result_json = result_decoded
+                
+                # Create OpenAI-style tool call
+                tool_call = {
+                    "id": tool_id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "arguments": arguments_decoded
+                    }
+                }
+                tool_calls.append(tool_call)
+                
+                # Create metadata entry
+                tool_metadata.append({
+                    "tool_name": tool_name,
+                    "tool_id": tool_id,
+                    "arguments": arguments_json,
+                    "result": result_json,
+                    "arguments_raw": arguments_decoded,
+                    "result_raw": result_decoded
+                })
+                
+                self._log(f"Parsed tool call: {tool_name} (ID: {tool_id})")
+                
+            except Exception as e:
+                self._log(f"Error parsing tool call: {str(e)}", "WARNING")
+                # Fallback metadata
+                tool_metadata.append({
+                    "tool_name": tool_name,
+                    "tool_id": tool_id,
+                    "arguments_raw": arguments_raw,
+                    "result_raw": result_raw,
+                    "parse_error": str(e)
+                })
             
             return match.group(0)  # Keep original for display
         
         # Extract tool metadata without modifying content for display
-        re.sub(tool_pattern, extract_tool_use, content, flags=re.DOTALL)
+        re.sub(tool_pattern, extract_openwebui_tool_call, content, flags=re.DOTALL)
         
-        return content, tool_metadata
+        return content, tool_metadata, tool_calls
     
     def _process_content(self, content: str) -> Dict[str, Any]:
         """
@@ -217,23 +279,25 @@ class Filter:
                 "display_content": str(content),
                 "openpipe_content": str(content),
                 "thinking_blocks": [],
-                "tool_metadata": []
+                "tool_metadata": [],
+                "tool_calls": []
             }
         
         # Extract thinking blocks for OpenPipe metadata
         thinking_blocks = self._extract_thinking_blocks(content)
         
-        # Parse tool blocks
-        _, tool_metadata = self._parse_tool_blocks(content)
+        # Parse tool blocks (OpenWebUI format)
+        _, tool_metadata, tool_calls = self._parse_tool_blocks(content)
         
-        # Convert content for OpenPipe (replace <details> with <think> tags, remove <summary>)
+        # Convert content for OpenPipe (replace <details> with <think> tags, remove tool calls)
         openpipe_content = self._convert_thinking_to_openpipe_format(content)
         
         return {
             "display_content": content,        # Keep original for OpenWebUI display
             "openpipe_content": openpipe_content,  # Formatted for OpenPipe
             "thinking_blocks": thinking_blocks,
-            "tool_metadata": tool_metadata
+            "tool_metadata": tool_metadata,
+            "tool_calls": tool_calls           # Parsed tool calls in OpenAI format
         }
     
     async def _send_to_openpipe(self, payload: Dict[str, Any]):
@@ -355,14 +419,18 @@ class Filter:
                     "content": processed["openpipe_content"]  # Send formatted content to OpenPipe
                 }
                 
-                # Add tool calls if present
-                if "tool_calls" in response_message:
+                # Add tool calls if present (prioritize parsed tool calls from OpenWebUI format)
+                if processed["tool_calls"]:
+                    openpipe_response["tool_calls"] = processed["tool_calls"]
+                elif "tool_calls" in response_message:
                     openpipe_response["tool_calls"] = response_message["tool_calls"]
+                    
+                # Add function calls if present (legacy format)
                 if "function_call" in response_message:
                     openpipe_response["function_call"] = response_message["function_call"]
                     
             else:
-                processed = {"thinking_blocks": [], "tool_metadata": []}
+                processed = {"thinking_blocks": [], "tool_metadata": [], "tool_calls": []}
                 openpipe_response = {"role": "assistant", "content": ""}
             
             # Build OpenPipe payload
@@ -427,7 +495,7 @@ class Filter:
                 },
             })
             
-            self._log(f"Successfully reported with {len(processed['thinking_blocks'])} thinking blocks")
+            self._log(f"Successfully reported with {len(processed['thinking_blocks'])} thinking blocks and {len(processed['tool_calls'])} tool calls")
             
         except Exception as e:
             self._log(f"Error in outlet processing: {str(e)}", "ERROR")
