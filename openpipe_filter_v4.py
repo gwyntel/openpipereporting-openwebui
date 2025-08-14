@@ -198,15 +198,27 @@ class Filter:
         tool_metadata = []
         tool_calls = []
         
-        # Pattern to match OpenWebUI tool call blocks
-        tool_pattern = r'<details[^>]*type="tool_calls"[^>]*?name="([^"]*)"[^>]*?arguments="([^"]*)"[^>]*?result="([^"]*)"[^>]*?id="([^"]*)"[^>]*?>(.*?)</details>'
+        # Pattern to match OpenWebUI tool call blocks - more flexible attribute matching
+        tool_pattern = r'<details[^>]*type="tool_calls"[^>]*>(.*?)</details>'
         
         def extract_openwebui_tool_call(match):
-            tool_name = match.group(1)
-            arguments_raw = match.group(2)
-            result_raw = match.group(3)
-            tool_id = match.group(4)
-            full_content = match.group(5)
+            full_block = match.group(0)
+            full_content = match.group(1)
+            
+            # Extract attributes from the opening tag using individual patterns
+            name_match = re.search(r'name="([^"]*)"', full_block)
+            arguments_match = re.search(r'arguments="([^"]*)"', full_block)
+            result_match = re.search(r'result="([^"]*)"', full_block)
+            id_match = re.search(r'id="([^"]*)"', full_block)
+            
+            if not all([name_match, arguments_match, result_match, id_match]):
+                self._log(f"Missing required attributes in tool call block", "WARNING")
+                return match.group(0)
+            
+            tool_name = name_match.group(1)
+            arguments_raw = arguments_match.group(1)
+            result_raw = result_match.group(1)
+            tool_id = id_match.group(1)
             
             try:
                 # Decode HTML entities and parse JSON arguments
