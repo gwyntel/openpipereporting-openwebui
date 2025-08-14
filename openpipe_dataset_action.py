@@ -432,16 +432,8 @@ class Action:
                 
                 self._log(f"Created message {i+1} with pre-tool content ({len(processed_pre_tool)} chars) + tool call")
                 
-                # Add tool result message to show the AI how the tool responded
-                tool_metadata_item = tool_metadata[i] if i < len(tool_metadata) else None
-                if tool_metadata_item and tool_metadata_item.get("result_raw"):
-                    tool_result_message = {
-                        "role": "tool",
-                        "content": tool_metadata_item["result_raw"],
-                        "tool_call_id": tool_call["id"]
-                    }
-                    messages.append(tool_result_message)
-                    self._log(f"Created tool result message for {tool_call['function']['name']}")
+                # Note: Tool results are included in the tool_metadata for training context
+                # OpenPipe datasets don't support role: "tool", so results are in metadata
             
             # Move position to after this tool call
             current_pos = match.end()
