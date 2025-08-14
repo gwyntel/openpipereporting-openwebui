@@ -193,10 +193,22 @@ class Filter:
             tuple: (content, tool_metadata, tool_calls)
         """
         if not self.valves.ENABLE_PARSING:
+            self._log("Tool parsing disabled via ENABLE_PARSING valve", "DEBUG")
             return content, [], []
             
         tool_metadata = []
         tool_calls = []
+        
+        # Debug: Log content length and check for tool call patterns
+        self._log(f"Parsing content of length {len(content)}", "DEBUG")
+        
+        # Check for any details tags first
+        details_count = len(re.findall(r'<details[^>]*>', content))
+        self._log(f"Found {details_count} <details> tags in content", "DEBUG")
+        
+        # Check specifically for tool_calls type
+        tool_calls_count = len(re.findall(r'<details[^>]*type="tool_calls"[^>]*>', content))
+        self._log(f"Found {tool_calls_count} <details type=\"tool_calls\"> tags", "DEBUG")
         
         # Pattern to match OpenWebUI tool call blocks - more flexible attribute matching
         tool_pattern = r'<details[^>]*type="tool_calls"[^>]*>(.*?)</details>'
@@ -205,14 +217,35 @@ class Filter:
             full_block = match.group(0)
             full_content = match.group(1)
             
+            self._log(f"Processing tool call block of length {len(full_block)}", "DEBUG")
+            self._log(f"Tool call block preview: {full_block[:200]}...", "DEBUG")
+            
             # Extract attributes from the opening tag using individual patterns
             name_match = re.search(r'name="([^"]*)"', full_block)
             arguments_match = re.search(r'arguments="([^"]*)"', full_block)
             result_match = re.search(r'result="([^"]*)"', full_block)
             id_match = re.search(r'id="([^"]*)"', full_block)
             
+            # Debug attribute extraction
+            self._log(f"Attribute extraction - name: {'✓' if name_match else '✗'}, "
+                     f"arguments: {'✓' if arguments_match else '✗'}, "
+                     f"result: {'✓' if result_match else '✗'}, "
+                     f"id: {'✓' if id_match else '✗'}", "DEBUG")
+            
+            if name_match:
+                self._log(f"Found tool name: {name_match.group(1)}", "DEBUG")
+            if id_match:
+                self._log(f"Found tool ID: {id_match.group(1)}", "DEBUG")
+            
             if not all([name_match, arguments_match, result_match, id_match]):
                 self._log(f"Missing required attributes in tool call block", "WARNING")
+                # Show which attributes are missing
+                missing = []
+                if not name_match: missing.append("name")
+                if not arguments_match: missing.append("arguments")
+                if not result_match: missing.append("result")
+                if not id_match: missing.append("id")
+                self._log(f"Missing attributes: {', '.join(missing)}", "WARNING")
                 return match.group(0)
             
             tool_name = name_match.group(1)
@@ -220,22 +253,32 @@ class Filter:
             result_raw = result_match.group(1)
             tool_id = id_match.group(1)
             
+            self._log(f"Extracted tool call - Name: {tool_name}, ID: {tool_id}", "DEBUG")
+            self._log(f"Arguments length: {len(arguments_raw)}, Result length: {len(result_raw)}", "DEBUG")
+            
             try:
                 # Decode HTML entities and parse JSON arguments
                 import html
                 arguments_decoded = html.unescape(arguments_raw)
                 result_decoded = html.unescape(result_raw)
                 
+                self._log(f"Decoded arguments length: {len(arguments_decoded)}", "DEBUG")
+                self._log(f"Arguments preview: {arguments_decoded[:100]}...", "DEBUG")
+                
                 # Parse arguments JSON
                 try:
                     arguments_json = json.loads(arguments_decoded)
-                except json.JSONDecodeError:
+                    self._log(f"Successfully parsed arguments JSON", "DEBUG")
+                except json.JSONDecodeError as e:
+                    self._log(f"Failed to parse arguments JSON: {str(e)}", "DEBUG")
                     arguments_json = {"raw_arguments": arguments_decoded}
                 
                 # Parse result JSON
                 try:
                     result_json = json.loads(result_decoded)
-                except json.JSONDecodeError:
+                    self._log(f"Successfully parsed result JSON", "DEBUG")
+                except json.JSONDecodeError as e:
+                    self._log(f"Failed to parse result JSON: {str(e)}", "DEBUG")
                     result_json = result_decoded
                 
                 # Create OpenAI-style tool call
@@ -259,10 +302,10 @@ class Filter:
                     "result_raw": result_decoded
                 })
                 
-                self._log(f"Parsed tool call: {tool_name} (ID: {tool_id})")
+                self._log(f"✅ Successfully parsed tool call: {tool_name} (ID: {tool_id})")
                 
             except Exception as e:
-                self._log(f"Error parsing tool call: {str(e)}", "WARNING")
+                self._log(f"❌ Error parsing tool call: {str(e)}", "ERROR")
                 # Fallback metadata
                 tool_metadata.append({
                     "tool_name": tool_name,
@@ -275,7 +318,12 @@ class Filter:
             return match.group(0)  # Keep original for display
         
         # Extract tool metadata without modifying content for display
+        matches = re.findall(tool_pattern, content, flags=re.DOTALL)
+        self._log(f"Regex found {len(matches)} tool call matches", "DEBUG")
+        
         re.sub(tool_pattern, extract_openwebui_tool_call, content, flags=re.DOTALL)
+        
+        self._log(f"Final parsing results - tool_metadata: {len(tool_metadata)}, tool_calls: {len(tool_calls)}", "DEBUG")
         
         return content, tool_metadata, tool_calls
     
@@ -309,12 +357,15 @@ class Filter:
             # Get text before this tool call
             pre_tool_text = content[current_pos:match.start()].strip()
             
+            # Convert to OpenPipe format and check if there's actual content after processing
             if pre_tool_text:
-                # Message with content before tool call
-                messages.append({
-                    "role": response_message.get("role", "assistant"),
-                    "content": self._convert_thinking_to_openpipe_format(pre_tool_text)
-                })
+                processed_pre_tool = self._convert_thinking_to_openpipe_format(pre_tool_text)
+                # Only add message if there's actual content after removing tool call blocks and processing
+                if processed_pre_tool.strip():
+                    messages.append({
+                        "role": response_message.get("role", "assistant"),
+                        "content": processed_pre_tool
+                    })
             
             # Message with tool call (if we have parsed tool calls)
             if i < len(processed["tool_calls"]):
@@ -330,10 +381,13 @@ class Filter:
         # Get text after the last tool call
         post_tool_text = content[current_pos:].strip()
         if post_tool_text:
-            messages.append({
-                "role": response_message.get("role", "assistant"),
-                "content": self._convert_thinking_to_openpipe_format(post_tool_text)
-            })
+            processed_post_tool = self._convert_thinking_to_openpipe_format(post_tool_text)
+            # Only add message if there's actual content after processing
+            if processed_post_tool.strip():
+                messages.append({
+                    "role": response_message.get("role", "assistant"),
+                    "content": processed_post_tool
+                })
         
         # If no messages were created, return a single empty message
         if not messages:
@@ -500,8 +554,18 @@ class Filter:
                 response_message = messages[-1]
                 content = response_message.get("content", "")
                 
+                # Debug: Log the content being processed
+                self._log(f"Processing response content of length {len(content)}", "DEBUG")
+                if content:
+                    self._log(f"Content preview: {content[:300]}...", "DEBUG")
+                
                 # Process content for thinking blocks and tool metadata
                 processed = self._process_content(content)
+                
+                # Debug: Log processing results
+                self._log(f"Processing results - thinking_blocks: {len(processed['thinking_blocks'])}, "
+                         f"tool_metadata: {len(processed['tool_metadata'])}, "
+                         f"tool_calls: {len(processed['tool_calls'])}", "DEBUG")
                 
                 # Update the message content for OpenWebUI display
                 if processed["display_content"] != content:
