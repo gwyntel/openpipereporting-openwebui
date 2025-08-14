@@ -381,6 +381,100 @@ class Action:
         
         return content, tool_metadata, tool_calls
     
+    def _split_content_with_tool_calls(self, content: str, role: str) -> List[Dict[str, Any]]:
+        """
+        Split content around tool calls to create separate messages for dataset
+        
+        This merges pre-tool content (thinking/text) with tool calls into single messages,
+        and separates post-tool content into follow-up messages.
+        
+        Returns:
+            List of message objects for dataset
+        """
+        messages = []
+        
+        # Parse tool blocks first
+        _, tool_metadata, tool_calls = self._parse_tool_blocks(content)
+        
+        # Find all tool call blocks in the original content
+        tool_pattern = r'<details[^>]*type="tool_calls"[^>]*>.*?</details>'
+        tool_matches = list(re.finditer(tool_pattern, content, re.DOTALL))
+        
+        if not tool_matches:
+            # No tool calls found, return single message
+            return [{
+                "role": role,
+                "content": self._convert_thinking_to_openpipe_format(content)
+            }]
+        
+        current_pos = 0
+        
+        # Process each tool call and its preceding content
+        for i, match in enumerate(tool_matches):
+            # Get text before this tool call (only the part we haven't processed yet)
+            pre_tool_text = content[current_pos:match.start()].strip()
+            
+            if i < len(tool_calls):
+                tool_call = tool_calls[i]
+                
+                # Process pre-tool content if it exists
+                processed_pre_tool = ""
+                if pre_tool_text:
+                    processed_pre_tool = self._convert_thinking_to_openpipe_format(pre_tool_text)
+                
+                # Create message with pre-tool content and tool call
+                message = {
+                    "role": role,
+                    "content": processed_pre_tool.strip(),
+                    "tool_calls": [tool_call]
+                }
+                messages.append(message)
+                
+                self._log(f"Created message {i+1} with pre-tool content ({len(processed_pre_tool)} chars) + tool call")
+                
+                # Add tool result message to show the AI how the tool responded
+                tool_metadata_item = tool_metadata[i] if i < len(tool_metadata) else None
+                if tool_metadata_item and tool_metadata_item.get("result_raw"):
+                    tool_result_message = {
+                        "role": "tool",
+                        "content": tool_metadata_item["result_raw"],
+                        "tool_call_id": tool_call["id"]
+                    }
+                    messages.append(tool_result_message)
+                    self._log(f"Created tool result message for {tool_call['function']['name']}")
+            
+            # Move position to after this tool call
+            current_pos = match.end()
+        
+        # Handle any remaining content after the last tool call
+        post_tool_text = content[current_pos:].strip()
+        if post_tool_text:
+            processed_post_tool = self._convert_thinking_to_openpipe_format(post_tool_text)
+            # Only add message if there's actual content after processing
+            if processed_post_tool.strip():
+                messages.append({
+                    "role": role,
+                    "content": processed_post_tool
+                })
+                self._log(f"Created post-tool message with {len(processed_post_tool)} chars")
+        
+        # Fallback: if no messages were created, return a single message
+        if not messages:
+            if tool_calls:
+                messages.append({
+                    "role": role,
+                    "content": self._convert_thinking_to_openpipe_format(content),
+                    "tool_calls": tool_calls
+                })
+            else:
+                messages.append({
+                    "role": role,
+                    "content": self._convert_thinking_to_openpipe_format(content)
+                })
+        
+        self._log(f"Split into {len(messages)} messages: {len([m for m in messages if m.get('tool_calls')])} with tool calls, {len([m for m in messages if not m.get('tool_calls')])} text-only")
+        return messages
+    
     def _extract_conversation_messages(self, body: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Extract and format messages from conversation body"""
         messages = body.get("messages", [])
@@ -458,39 +552,31 @@ class Action:
             
             # Apply thinking block and tool call parsing for assistant messages
             if role == "assistant" and isinstance(content, str):
-                # Parse OpenWebUI tool calls first
+                # Check if this message contains tool calls that need splitting
                 _, tool_metadata, parsed_tool_calls = self._parse_tool_blocks(content)
                 
-                # Convert <details> blocks to <think> tags and remove tool call blocks
-                content = self._convert_thinking_to_openpipe_format(content)
-                
-                # Extract thinking blocks for metadata
-                thinking_blocks = self._extract_thinking_blocks(message.get("content", ""))
-                if thinking_blocks:
-                    self._log(f"Extracted {len(thinking_blocks)} thinking blocks from assistant message")
-                
-                # If we parsed tool calls from OpenWebUI format, use those
                 if parsed_tool_calls:
-                    self._log(f"Using {len(parsed_tool_calls)} parsed tool calls from OpenWebUI format")
+                    # Split the message around tool calls
+                    split_messages = self._split_content_with_tool_calls(content, role)
+                    formatted_messages.extend(split_messages)
+                    self._log(f"Split assistant message into {len(split_messages)} messages")
+                    continue  # Skip the normal processing since we've already added the split messages
+                else:
+                    # No tool calls, process normally
+                    content = self._convert_thinking_to_openpipe_format(content)
+                    
+                    # Extract thinking blocks for metadata
+                    thinking_blocks = self._extract_thinking_blocks(message.get("content", ""))
+                    if thinking_blocks:
+                        self._log(f"Extracted {len(thinking_blocks)} thinking blocks from assistant message")
             
             formatted_message = {
                 "role": role,
                 "content": content
             }
             
-            # Enhanced tool calls and function calls preservation
-            # Prioritize parsed tool calls from OpenWebUI format
-            if role == "assistant" and isinstance(message.get("content", ""), str):
-                _, _, parsed_tool_calls = self._parse_tool_blocks(message.get("content", ""))
-                if parsed_tool_calls:
-                    formatted_message["tool_calls"] = parsed_tool_calls
-                    self._log(f"Added {len(parsed_tool_calls)} parsed tool calls to message")
-                elif "tool_calls" in message:
-                    tool_calls = message["tool_calls"]
-                    if isinstance(tool_calls, list) and tool_calls:
-                        formatted_message["tool_calls"] = tool_calls
-                        self._log(f"Preserved {len(tool_calls)} existing tool calls in message")
-            elif "tool_calls" in message:
+            # Enhanced tool calls and function calls preservation (for non-split messages)
+            if "tool_calls" in message:
                 tool_calls = message["tool_calls"]
                 if isinstance(tool_calls, list) and tool_calls:
                     formatted_message["tool_calls"] = tool_calls
