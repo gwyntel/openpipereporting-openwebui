@@ -331,8 +331,8 @@ class Filter:
         """
         Split content around tool calls to create separate messages for OpenPipe
         
-        This handles the case where OpenWebUI combines pre-tool text, tool calls, and post-tool text
-        into a single message, but OpenPipe expects separate messages for proper training.
+        This merges pre-tool content (thinking/text) with tool calls into single messages,
+        and separates post-tool content into follow-up messages.
         
         Returns:
             List of message objects for OpenPipe
@@ -353,32 +353,33 @@ class Filter:
         
         current_pos = 0
         
+        # Process each tool call and its preceding content
         for i, match in enumerate(tool_matches):
-            # Get text before this tool call
+            # Get text before this tool call (only the part we haven't processed yet)
             pre_tool_text = content[current_pos:match.start()].strip()
             
-            # Convert to OpenPipe format and check if there's actual content after processing
-            if pre_tool_text:
-                processed_pre_tool = self._convert_thinking_to_openpipe_format(pre_tool_text)
-                # Only add message if there's actual content after removing tool call blocks and processing
-                if processed_pre_tool.strip():
-                    messages.append({
-                        "role": response_message.get("role", "assistant"),
-                        "content": processed_pre_tool
-                    })
-            
-            # Message with tool call (if we have parsed tool calls)
             if i < len(processed["tool_calls"]):
                 tool_call = processed["tool_calls"][i]
-                messages.append({
+                
+                # Process pre-tool content if it exists
+                processed_pre_tool = ""
+                if pre_tool_text:
+                    processed_pre_tool = self._convert_thinking_to_openpipe_format(pre_tool_text)
+                
+                # Create message with pre-tool content and tool call
+                message = {
                     "role": response_message.get("role", "assistant"),
-                    "content": "",  # Tool call messages typically have empty content
+                    "content": processed_pre_tool.strip(),
                     "tool_calls": [tool_call]
-                })
+                }
+                messages.append(message)
+                
+                self._log(f"Created message {i+1} with pre-tool content ({len(processed_pre_tool)} chars) + tool call", "DEBUG")
             
+            # Move position to after this tool call
             current_pos = match.end()
         
-        # Get text after the last tool call
+        # Handle any remaining content after the last tool call
         post_tool_text = content[current_pos:].strip()
         if post_tool_text:
             processed_post_tool = self._convert_thinking_to_openpipe_format(post_tool_text)
@@ -388,15 +389,23 @@ class Filter:
                     "role": response_message.get("role", "assistant"),
                     "content": processed_post_tool
                 })
+                self._log(f"Created post-tool message with {len(processed_post_tool)} chars", "DEBUG")
         
-        # If no messages were created, return a single empty message
+        # Fallback: if no messages were created, return a single message
         if not messages:
-            messages.append({
-                "role": response_message.get("role", "assistant"),
-                "content": ""
-            })
+            if processed["tool_calls"]:
+                messages.append({
+                    "role": response_message.get("role", "assistant"),
+                    "content": processed["openpipe_content"],
+                    "tool_calls": processed["tool_calls"]
+                })
+            else:
+                messages.append({
+                    "role": response_message.get("role", "assistant"),
+                    "content": processed["openpipe_content"]
+                })
         
-        self._log(f"Split content into {len(messages)} messages around {len(processed['tool_calls'])} tool calls")
+        self._log(f"Split into {len(messages)} messages: {len([m for m in messages if m.get('tool_calls')])} with tool calls, {len([m for m in messages if not m.get('tool_calls')])} text-only")
         return messages
     
     def _process_content(self, content: str) -> Dict[str, Any]:
@@ -619,6 +628,12 @@ class Filter:
                 # Multiple messages - send each as a separate completion
                 openpipe_payloads = []
                 for i, message in enumerate(openpipe_response):
+                    # Determine finish_reason based on message content
+                    if message.get("tool_calls"):
+                        finish_reason = "tool_calls"
+                    else:
+                        finish_reason = "stop"
+                    
                     payload = {
                         "requestedAt": request_data["requested_at"],
                         "receivedAt": received_at,
@@ -631,7 +646,7 @@ class Filter:
                             "choices": [{
                                 "index": 0,
                                 "message": message,
-                                "finish_reason": "stop" if i == len(openpipe_response) - 1 else "tool_calls"
+                                "finish_reason": finish_reason
                             }]
                         },
                         "statusCode": 200,
