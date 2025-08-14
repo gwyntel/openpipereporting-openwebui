@@ -8,6 +8,7 @@ icon_url: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAMAAAD04JH5AAAA
 
 import asyncio
 import json
+import re
 from typing import Dict, Any, List
 from pydantic import BaseModel, Field
 
@@ -162,6 +163,91 @@ class Action:
             self._log(f"Failed to add entries to dataset {dataset_id}: {str(e)}", "ERROR")
             raise
     
+    def _convert_thinking_to_openpipe_format(self, content: str) -> str:
+        """
+        Convert content for OpenPipe by replacing <details> blocks with <think> tags
+        and removing <summary> content
+        
+        Returns:
+            str: content formatted for OpenPipe
+        """
+        if not isinstance(content, str):
+            return content
+            
+        def replace_details_with_think(match):
+            full_content = match.group(1).strip()
+            
+            # Remove <summary> tag and its content completely
+            remaining_content = re.sub(r'<summary[^>]*>.*?</summary>', '', full_content, flags=re.DOTALL).strip()
+            
+            # Clean up leading '>' characters
+            if remaining_content.startswith('>'):
+                remaining_content = remaining_content[1:].strip()
+            
+            # Clean up multiple '>' at start of lines
+            remaining_content = re.sub(r'^>\s*', '', remaining_content, flags=re.MULTILINE)
+            
+            if remaining_content:
+                return f'<think>{remaining_content}</think>'
+            else:
+                return ''
+        
+        # Replace <details type="reasoning" ...>...</details> with <think>...</think>
+        details_pattern = r'<details[^>]*type="reasoning"[^>]*>(.*?)</details>'
+        openpipe_content = re.sub(details_pattern, replace_details_with_think, content, flags=re.DOTALL)
+        
+        # Clean up extra whitespace
+        openpipe_content = re.sub(r'\n\s*\n\s*\n', '\n\n', openpipe_content)
+        openpipe_content = openpipe_content.strip()
+        
+        return openpipe_content
+    
+    def _extract_thinking_blocks(self, content: str) -> list:
+        """
+        Extract thinking blocks for metadata without modifying display content
+        
+        Supports multiple formats:
+        - <thinking>...</thinking>
+        - <details type="reasoning">...</details>
+        
+        Returns:
+            list: extracted thinking blocks (just the content, no tags)
+        """
+        if not isinstance(content, str):
+            return []
+            
+        thinking_blocks = []
+        
+        # Pattern 1: <details type="reasoning" ...>...</details> blocks
+        details_pattern = r'<details[^>]*type="reasoning"[^>]*>(.*?)</details>'
+        details_matches = re.findall(details_pattern, content, re.DOTALL)
+        
+        for match in details_matches:
+            full_content = match.strip()
+            
+            # Remove <summary> tag and its content completely
+            remaining_content = re.sub(r'<summary[^>]*>.*?</summary>', '', full_content, flags=re.DOTALL).strip()
+            
+            # Clean up leading '>' characters from remaining content
+            if remaining_content.startswith('>'):
+                remaining_content = remaining_content[1:].strip()
+            
+            # Clean up multiple '>' at start of lines
+            remaining_content = re.sub(r'^>\s*', '', remaining_content, flags=re.MULTILINE)
+            
+            if remaining_content:
+                thinking_blocks.append(remaining_content)
+        
+        # Pattern 2: <thinking>...</thinking> blocks (fallback)
+        thinking_pattern = r'<thinking>(.*?)</thinking>'
+        thinking_matches = re.findall(thinking_pattern, content, re.DOTALL)
+        
+        for match in thinking_matches:
+            thinking_content = match.strip()
+            thinking_blocks.append(thinking_content)
+        
+        return thinking_blocks
+    
     def _extract_conversation_messages(self, body: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Extract and format messages from conversation body"""
         messages = body.get("messages", [])
@@ -236,6 +322,16 @@ class Action:
             # Skip system messages if configured
             if role == "system" and not self.valves.INCLUDE_SYSTEM_MESSAGES:
                 continue
+            
+            # Apply thinking block parsing for assistant messages
+            if role == "assistant" and isinstance(content, str):
+                # Convert <details> blocks to <think> tags and remove <summary> content
+                content = self._convert_thinking_to_openpipe_format(content)
+                
+                # Extract thinking blocks for metadata
+                thinking_blocks = self._extract_thinking_blocks(message.get("content", ""))
+                if thinking_blocks:
+                    self._log(f"Extracted {len(thinking_blocks)} thinking blocks from assistant message")
             
             formatted_message = {
                 "role": role,
