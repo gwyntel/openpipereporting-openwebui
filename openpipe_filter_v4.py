@@ -267,6 +267,72 @@ class Filter:
         
         return content, tool_metadata, tool_calls
     
+    def _split_content_with_tool_calls(self, processed: Dict[str, Any], response_message: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Split content around tool calls to create separate messages for OpenPipe
+        
+        This handles the case where OpenWebUI combines pre-tool text, tool calls, and post-tool text
+        into a single message, but OpenPipe expects separate messages for proper training.
+        
+        Returns:
+            List of message objects for OpenPipe
+        """
+        messages = []
+        content = processed["display_content"]
+        
+        # Find all tool call blocks in the original content
+        tool_pattern = r'<details[^>]*type="tool_calls"[^>]*>.*?</details>'
+        tool_matches = list(re.finditer(tool_pattern, content, re.DOTALL))
+        
+        if not tool_matches:
+            # No tool calls found, return single message
+            return [{
+                "role": response_message.get("role", "assistant"),
+                "content": processed["openpipe_content"]
+            }]
+        
+        current_pos = 0
+        
+        for i, match in enumerate(tool_matches):
+            # Get text before this tool call
+            pre_tool_text = content[current_pos:match.start()].strip()
+            
+            if pre_tool_text:
+                # Message with content before tool call
+                messages.append({
+                    "role": response_message.get("role", "assistant"),
+                    "content": self._convert_thinking_to_openpipe_format(pre_tool_text)
+                })
+            
+            # Message with tool call (if we have parsed tool calls)
+            if i < len(processed["tool_calls"]):
+                tool_call = processed["tool_calls"][i]
+                messages.append({
+                    "role": response_message.get("role", "assistant"),
+                    "content": "",  # Tool call messages typically have empty content
+                    "tool_calls": [tool_call]
+                })
+            
+            current_pos = match.end()
+        
+        # Get text after the last tool call
+        post_tool_text = content[current_pos:].strip()
+        if post_tool_text:
+            messages.append({
+                "role": response_message.get("role", "assistant"),
+                "content": self._convert_thinking_to_openpipe_format(post_tool_text)
+            })
+        
+        # If no messages were created, return a single empty message
+        if not messages:
+            messages.append({
+                "role": response_message.get("role", "assistant"),
+                "content": ""
+            })
+        
+        self._log(f"Split content into {len(messages)} messages around {len(processed['tool_calls'])} tool calls")
+        return messages
+    
     def _process_content(self, content: str) -> Dict[str, Any]:
         """
         Process message content to extract thinking blocks and tool metadata
@@ -300,8 +366,8 @@ class Filter:
             "tool_calls": tool_calls           # Parsed tool calls in OpenAI format
         }
     
-    async def _send_to_openpipe(self, payload: Dict[str, Any]):
-        """Send report to OpenPipe API"""
+    async def _send_to_openpipe(self, payload):
+        """Send report(s) to OpenPipe API"""
         if not self.valves.OPENPIPE_API_KEY:
             self._log("OpenPipe API key not configured", "WARNING")
             return
@@ -312,16 +378,19 @@ class Filter:
             "Content-Type": "application/json"
         }
         
+        # Handle multiple payloads (for tool call sequences)
+        payloads_to_send = payload if isinstance(payload, list) else [payload]
+        
         try:
-            self._log("Sending report to OpenPipe...")
+            self._log(f"Sending {len(payloads_to_send)} report(s) to OpenPipe...")
             
             import urllib.request
             import urllib.error
             
             loop = asyncio.get_event_loop()
             
-            def make_request():
-                data = json.dumps(payload).encode('utf-8')
+            def make_request(single_payload):
+                data = json.dumps(single_payload).encode('utf-8')
                 req = urllib.request.Request(url, data=data, headers=headers)
                 try:
                     with urllib.request.urlopen(req, timeout=10) as response:
@@ -331,12 +400,26 @@ class Filter:
                 except urllib.error.URLError as e:
                     raise Exception(f"URL Error: {str(e)}")
             
-            status_code, response_text = await loop.run_in_executor(None, make_request)
+            # Send each payload
+            success_count = 0
+            for i, single_payload in enumerate(payloads_to_send):
+                try:
+                    status_code, response_text = await loop.run_in_executor(None, make_request, single_payload)
+                    
+                    if status_code == 200:
+                        success_count += 1
+                        if len(payloads_to_send) > 1:
+                            self._log(f"✅ Successfully reported message {i+1}/{len(payloads_to_send)} to OpenPipe")
+                    else:
+                        self._log(f"❌ OpenPipe API error for message {i+1}: {status_code} - {response_text}", "ERROR")
+                        
+                except Exception as e:
+                    self._log(f"❌ Failed to report message {i+1} to OpenPipe: {str(e)}", "ERROR")
             
-            if status_code == 200:
-                self._log("✅ Successfully reported to OpenPipe")
+            if success_count == len(payloads_to_send):
+                self._log(f"✅ Successfully reported all {success_count} messages to OpenPipe")
             else:
-                self._log(f"❌ OpenPipe API error: {status_code} - {response_text}", "ERROR")
+                self._log(f"⚠️ Reported {success_count}/{len(payloads_to_send)} messages to OpenPipe", "WARNING")
                 
         except Exception as e:
             self._log(f"❌ Failed to report to OpenPipe: {str(e)}", "ERROR")
@@ -413,21 +496,23 @@ class Filter:
                     response_message["content"] = processed["display_content"]
                     self._log("Processed thinking blocks and tool metadata")
                 
-                # Prepare response message for OpenPipe (with formatted content)
-                openpipe_response = {
-                    "role": response_message.get("role", "assistant"),
-                    "content": processed["openpipe_content"]  # Send formatted content to OpenPipe
-                }
-                
-                # Add tool calls if present (prioritize parsed tool calls from OpenWebUI format)
+                # Check if we have tool calls - need to split into separate messages
                 if processed["tool_calls"]:
-                    openpipe_response["tool_calls"] = processed["tool_calls"]
-                elif "tool_calls" in response_message:
-                    openpipe_response["tool_calls"] = response_message["tool_calls"]
+                    # Split content around tool calls to create separate messages
+                    messages_to_send = self._split_content_with_tool_calls(processed, response_message)
+                    openpipe_response = messages_to_send  # This will be a list of messages
+                else:
+                    # Single message without tool calls
+                    openpipe_response = {
+                        "role": response_message.get("role", "assistant"),
+                        "content": processed["openpipe_content"]
+                    }
                     
-                # Add function calls if present (legacy format)
-                if "function_call" in response_message:
-                    openpipe_response["function_call"] = response_message["function_call"]
+                    # Add existing tool calls if present (legacy format)
+                    if "tool_calls" in response_message:
+                        openpipe_response["tool_calls"] = response_message["tool_calls"]
+                    if "function_call" in response_message:
+                        openpipe_response["function_call"] = response_message["function_call"]
                     
             else:
                 processed = {"thinking_blocks": [], "tool_metadata": [], "tool_calls": []}
@@ -453,24 +538,51 @@ class Filter:
             if processed["tool_metadata"]:
                 metadata["tool_metadata"] = processed["tool_metadata"]
             
-            openpipe_payload = {
-                "requestedAt": request_data["requested_at"],
-                "receivedAt": received_at,
-                "reqPayload": req_payload,
-                "respPayload": {
-                    "id": f"chatcmpl-{request_id.replace('.', '').replace('_', '')}",
-                    "object": "chat.completion",
-                    "created": int(received_at / 1000),
-                    "model": req_payload.get("model", "unknown"),
-                    "choices": [{
-                        "index": 0,
-                        "message": openpipe_response,
-                        "finish_reason": "stop"
-                    }]
-                },
-                "statusCode": 200,
-                "metadata": metadata
-            }
+            # Handle multiple messages for tool calls
+            if isinstance(openpipe_response, list):
+                # Multiple messages - send each as a separate completion
+                openpipe_payloads = []
+                for i, message in enumerate(openpipe_response):
+                    payload = {
+                        "requestedAt": request_data["requested_at"],
+                        "receivedAt": received_at,
+                        "reqPayload": req_payload,
+                        "respPayload": {
+                            "id": f"chatcmpl-{request_id.replace('.', '').replace('_', '')}-{i}",
+                            "object": "chat.completion",
+                            "created": int(received_at / 1000),
+                            "model": req_payload.get("model", "unknown"),
+                            "choices": [{
+                                "index": 0,
+                                "message": message,
+                                "finish_reason": "stop" if i == len(openpipe_response) - 1 else "tool_calls"
+                            }]
+                        },
+                        "statusCode": 200,
+                        "metadata": {**metadata, "message_index": i, "total_messages": len(openpipe_response)}
+                    }
+                    openpipe_payloads.append(payload)
+                openpipe_payload = openpipe_payloads
+            else:
+                # Single message
+                openpipe_payload = {
+                    "requestedAt": request_data["requested_at"],
+                    "receivedAt": received_at,
+                    "reqPayload": req_payload,
+                    "respPayload": {
+                        "id": f"chatcmpl-{request_id.replace('.', '').replace('_', '')}",
+                        "object": "chat.completion",
+                        "created": int(received_at / 1000),
+                        "model": req_payload.get("model", "unknown"),
+                        "choices": [{
+                            "index": 0,
+                            "message": openpipe_response,
+                            "finish_reason": "stop"
+                        }]
+                    },
+                    "statusCode": 200,
+                    "metadata": metadata
+                }
             
             # UI feedback
             await __event_emitter__({
