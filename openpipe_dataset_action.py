@@ -165,8 +165,10 @@ class Action:
     
     def _convert_thinking_to_openpipe_format(self, content: str) -> str:
         """
-        Convert content for OpenPipe by replacing <details> blocks with <think> tags
-        and removing <summary> content
+        Convert content for OpenPipe by:
+        1. Replacing <details type="reasoning"> blocks with <think> tags
+        2. Removing <details type="tool_calls"> blocks (since they'll be in tool_calls)
+        3. Removing <summary> content
         
         Returns:
             str: content formatted for OpenPipe
@@ -195,6 +197,11 @@ class Action:
         # Replace <details type="reasoning" ...>...</details> with <think>...</think>
         details_pattern = r'<details[^>]*type="reasoning"[^>]*>(.*?)</details>'
         openpipe_content = re.sub(details_pattern, replace_details_with_think, content, flags=re.DOTALL)
+        
+        # Remove <details type="tool_calls" ...>...</details> blocks entirely
+        # (tool calls will be represented in the tool_calls field instead)
+        tool_calls_pattern = r'<details[^>]*type="tool_calls"[^>]*>.*?</details>'
+        openpipe_content = re.sub(tool_calls_pattern, '', openpipe_content, flags=re.DOTALL)
         
         # Clean up extra whitespace
         openpipe_content = re.sub(r'\n\s*\n\s*\n', '\n\n', openpipe_content)
@@ -247,6 +254,132 @@ class Action:
             thinking_blocks.append(thinking_content)
         
         return thinking_blocks
+    
+    def _parse_tool_blocks(self, content: str) -> tuple[str, list, list]:
+        """
+        Parse OpenWebUI tool call blocks and extract metadata
+        
+        OpenWebUI formats tool calls as:
+        <details type="tool_calls" done="true" id="tooluse_xxx" name="tool_name" arguments="..." result="..." files="">
+        <summary>Tool Executed</summary>
+        </details>
+        
+        Returns:
+            tuple: (content, tool_metadata, tool_calls)
+        """
+        if not isinstance(content, str):
+            return content, [], []
+            
+        tool_metadata = []
+        tool_calls = []
+        
+        # Debug: Log content analysis
+        self._log(f"Parsing content of length {len(content)} for tool calls")
+        
+        # Check for tool_calls type
+        tool_calls_count = len(re.findall(r'<details[^>]*type="tool_calls"[^>]*>', content))
+        if tool_calls_count > 0:
+            self._log(f"Found {tool_calls_count} <details type=\"tool_calls\"> tags")
+        
+        # Pattern to match OpenWebUI tool call blocks
+        tool_pattern = r'<details[^>]*type="tool_calls"[^>]*>(.*?)</details>'
+        
+        def extract_openwebui_tool_call(match):
+            full_block = match.group(0)
+            full_content = match.group(1)
+            
+            self._log(f"Processing tool call block of length {len(full_block)}")
+            
+            # Extract attributes from the opening tag using individual patterns
+            name_match = re.search(r'name="([^"]*)"', full_block)
+            arguments_match = re.search(r'arguments="([^"]*)"', full_block)
+            result_match = re.search(r'result="([^"]*)"', full_block)
+            id_match = re.search(r'id="([^"]*)"', full_block)
+            
+            if not all([name_match, arguments_match, result_match, id_match]):
+                self._log(f"Missing required attributes in tool call block", "WARNING")
+                missing = []
+                if not name_match: missing.append("name")
+                if not arguments_match: missing.append("arguments")
+                if not result_match: missing.append("result")
+                if not id_match: missing.append("id")
+                self._log(f"Missing attributes: {', '.join(missing)}", "WARNING")
+                return match.group(0)
+            
+            tool_name = name_match.group(1)
+            arguments_raw = arguments_match.group(1)
+            result_raw = result_match.group(1)
+            tool_id = id_match.group(1)
+            
+            self._log(f"Extracted tool call - Name: {tool_name}, ID: {tool_id}")
+            
+            try:
+                # Decode HTML entities and parse JSON arguments
+                import html
+                arguments_decoded = html.unescape(arguments_raw)
+                result_decoded = html.unescape(result_raw)
+                
+                # Parse arguments JSON
+                try:
+                    arguments_json = json.loads(arguments_decoded)
+                    self._log(f"Successfully parsed arguments JSON")
+                except json.JSONDecodeError as e:
+                    self._log(f"Failed to parse arguments JSON: {str(e)}")
+                    arguments_json = {"raw_arguments": arguments_decoded}
+                
+                # Parse result JSON
+                try:
+                    result_json = json.loads(result_decoded)
+                    self._log(f"Successfully parsed result JSON")
+                except json.JSONDecodeError as e:
+                    self._log(f"Failed to parse result JSON: {str(e)}")
+                    result_json = result_decoded
+                
+                # Create OpenAI-style tool call
+                tool_call = {
+                    "id": tool_id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "arguments": arguments_decoded
+                    }
+                }
+                tool_calls.append(tool_call)
+                
+                # Create metadata entry
+                tool_metadata.append({
+                    "tool_name": tool_name,
+                    "tool_id": tool_id,
+                    "arguments": arguments_json,
+                    "result": result_json,
+                    "arguments_raw": arguments_decoded,
+                    "result_raw": result_decoded
+                })
+                
+                self._log(f"✅ Successfully parsed tool call: {tool_name} (ID: {tool_id})")
+                
+            except Exception as e:
+                self._log(f"❌ Error parsing tool call: {str(e)}", "ERROR")
+                # Fallback metadata
+                tool_metadata.append({
+                    "tool_name": tool_name,
+                    "tool_id": tool_id,
+                    "arguments_raw": arguments_raw,
+                    "result_raw": result_raw,
+                    "parse_error": str(e)
+                })
+            
+            return match.group(0)  # Keep original for display
+        
+        # Extract tool metadata without modifying content for display
+        matches = re.findall(tool_pattern, content, flags=re.DOTALL)
+        self._log(f"Regex found {len(matches)} tool call matches")
+        
+        re.sub(tool_pattern, extract_openwebui_tool_call, content, flags=re.DOTALL)
+        
+        self._log(f"Final parsing results - tool_metadata: {len(tool_metadata)}, tool_calls: {len(tool_calls)}")
+        
+        return content, tool_metadata, tool_calls
     
     def _extract_conversation_messages(self, body: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Extract and format messages from conversation body"""
@@ -323,15 +456,22 @@ class Action:
             if role == "system" and not self.valves.INCLUDE_SYSTEM_MESSAGES:
                 continue
             
-            # Apply thinking block parsing for assistant messages
+            # Apply thinking block and tool call parsing for assistant messages
             if role == "assistant" and isinstance(content, str):
-                # Convert <details> blocks to <think> tags and remove <summary> content
+                # Parse OpenWebUI tool calls first
+                _, tool_metadata, parsed_tool_calls = self._parse_tool_blocks(content)
+                
+                # Convert <details> blocks to <think> tags and remove tool call blocks
                 content = self._convert_thinking_to_openpipe_format(content)
                 
                 # Extract thinking blocks for metadata
                 thinking_blocks = self._extract_thinking_blocks(message.get("content", ""))
                 if thinking_blocks:
                     self._log(f"Extracted {len(thinking_blocks)} thinking blocks from assistant message")
+                
+                # If we parsed tool calls from OpenWebUI format, use those
+                if parsed_tool_calls:
+                    self._log(f"Using {len(parsed_tool_calls)} parsed tool calls from OpenWebUI format")
             
             formatted_message = {
                 "role": role,
@@ -339,7 +479,18 @@ class Action:
             }
             
             # Enhanced tool calls and function calls preservation
-            if "tool_calls" in message:
+            # Prioritize parsed tool calls from OpenWebUI format
+            if role == "assistant" and isinstance(message.get("content", ""), str):
+                _, _, parsed_tool_calls = self._parse_tool_blocks(message.get("content", ""))
+                if parsed_tool_calls:
+                    formatted_message["tool_calls"] = parsed_tool_calls
+                    self._log(f"Added {len(parsed_tool_calls)} parsed tool calls to message")
+                elif "tool_calls" in message:
+                    tool_calls = message["tool_calls"]
+                    if isinstance(tool_calls, list) and tool_calls:
+                        formatted_message["tool_calls"] = tool_calls
+                        self._log(f"Preserved {len(tool_calls)} existing tool calls in message")
+            elif "tool_calls" in message:
                 tool_calls = message["tool_calls"]
                 if isinstance(tool_calls, list) and tool_calls:
                     formatted_message["tool_calls"] = tool_calls
