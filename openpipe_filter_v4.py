@@ -182,13 +182,13 @@ class Filter:
         </details>
         
         Returns:
-            tuple: (content, tool_metadata, tool_calls)
+            tuple: (content, tool_use, tool_calls)
         """
         if not self.valves.ENABLE_PARSING:
             self._log("Tool parsing disabled via ENABLE_PARSING valve", "DEBUG")
             return content, [], []
             
-        tool_metadata = []
+        tool_use = []
         tool_calls = []
         
         # Debug: Log content length and check for tool call patterns
@@ -285,7 +285,7 @@ class Filter:
                 tool_calls.append(tool_call)
                 
                 # Create metadata entry
-                tool_metadata.append({
+                tool_use.append({
                     "tool_name": tool_name,
                     "tool_id": tool_id,
                     "arguments": arguments_json,
@@ -299,7 +299,7 @@ class Filter:
             except Exception as e:
                 self._log(f"❌ Error parsing tool call: {str(e)}", "ERROR")
                 # Fallback metadata
-                tool_metadata.append({
+                tool_use.append({
                     "tool_name": tool_name,
                     "tool_id": tool_id,
                     "arguments_raw": arguments_raw,
@@ -315,9 +315,9 @@ class Filter:
         
         re.sub(tool_pattern, extract_openwebui_tool_call, content, flags=re.DOTALL)
         
-        self._log(f"Final parsing results - tool_metadata: {len(tool_metadata)}, tool_calls: {len(tool_calls)}", "DEBUG")
+        self._log(f"Final parsing results - tool_use: {len(tool_use)}, tool_calls: {len(tool_calls)}", "DEBUG")
         
-        return content, tool_metadata, tool_calls
+        return content, tool_use, tool_calls
     
     def _split_content_with_tool_calls(self, processed: Dict[str, Any], response_message: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
@@ -415,7 +415,7 @@ class Filter:
                 "display_content": str(content),
                 "openpipe_content": str(content),
                 "thinking_blocks": [],
-                "tool_metadata": [],
+                "tool_use": [],
                 "tool_calls": []
             }
         
@@ -423,7 +423,7 @@ class Filter:
         thinking_blocks = self._extract_thinking_blocks(content)
         
         # Parse tool blocks (OpenWebUI format)
-        _, tool_metadata, tool_calls = self._parse_tool_blocks(content)
+        _, tool_use, tool_calls = self._parse_tool_blocks(content)
         
         # Convert content for OpenPipe (replace <details> with <think> tags, remove tool calls)
         openpipe_content = self._convert_thinking_to_openpipe_format(content)
@@ -432,7 +432,7 @@ class Filter:
             "display_content": content,        # Keep original for OpenWebUI display
             "openpipe_content": openpipe_content,  # Formatted for OpenPipe
             "thinking_blocks": thinking_blocks,
-            "tool_metadata": tool_metadata,
+            "tool_use": tool_use,
             "tool_calls": tool_calls           # Parsed tool calls in OpenAI format
         }
     
@@ -568,7 +568,7 @@ class Filter:
                 
                 # Debug: Log processing results
                 self._log(f"Processing results - thinking_blocks: {len(processed['thinking_blocks'])}, "
-                         f"tool_metadata: {len(processed['tool_metadata'])}, "
+                         f"tool_use: {len(processed['tool_use'])}, "
                          f"tool_calls: {len(processed['tool_calls'])}", "DEBUG")
                 
                 # Update the message content for OpenWebUI display
@@ -595,7 +595,7 @@ class Filter:
                         openpipe_response["function_call"] = response_message["function_call"]
                     
             else:
-                processed = {"thinking_blocks": [], "tool_metadata": [], "tool_calls": []}
+                processed = {"thinking_blocks": [], "tool_use": [], "tool_calls": []}
                 openpipe_response = {"role": "assistant", "content": ""}
             
             # Build OpenPipe payload
@@ -604,9 +604,9 @@ class Filter:
                 del req_payload["metadata"]["openpipe_request_id"]
             
             # Enhanced metadata with parsing results
-            metadata = {
+            tags = {
                 "thinking_blocks_count": len(processed["thinking_blocks"]),
-                "tool_calls_count": len(processed["tool_metadata"]),
+                "tool_calls_count": len(processed["tool_use"]),
                 "inference_time_ms": inference_time,
                 "parsing_enabled": self.valves.ENABLE_PARSING,
                 "filter_version": "v4.0_enhanced_parsing"
@@ -614,9 +614,9 @@ class Filter:
             
             # Add thinking block content to metadata (for OpenPipe training)
             if processed["thinking_blocks"]:
-                metadata["thinking_blocks"] = processed["thinking_blocks"]
-            if processed["tool_metadata"]:
-                metadata["tool_metadata"] = processed["tool_metadata"]
+                tags["thinking_blocks"] = processed["thinking_blocks"]
+            if processed["tool_use"]:
+                tags["tool_use"] = processed["tool_use"]
             
             # Handle multiple messages for tool calls
             if isinstance(openpipe_response, list):
@@ -645,7 +645,7 @@ class Filter:
                             }]
                         },
                         "statusCode": 200,
-                        "metadata": {**metadata, "message_index": i, "total_messages": len(openpipe_response)}
+                        "tags": {**tags, "message_index": i, "total_messages": len(openpipe_response)}
                     }
                     openpipe_payloads.append(payload)
                 openpipe_payload = openpipe_payloads
@@ -666,9 +666,9 @@ class Filter:
                             "finish_reason": "stop"
                         }]
                     },
-                    "statusCode": 200,
-                    "metadata": metadata
-                }
+                        "statusCode": 200,
+                        "tags": tags
+                    }
             
             # UI feedback
             await __event_emitter__({
@@ -694,7 +694,7 @@ class Filter:
                     },
                 })
             
-            self._log(f"Successfully reported with {len(processed['thinking_blocks'])} thinking blocks and {len(processed['tool_calls'])} tool calls")
+            self._log(f"Successfully reported with {len(processed['thinking_blocks'])} thinking blocks and {len(processed['tool_use'])} tool calls")
             
         except Exception as e:
             self._log(f"Error in outlet processing: {str(e)}", "ERROR")
