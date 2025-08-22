@@ -48,6 +48,10 @@ class Filter:
             default=True, 
             description="Enable thinking block and tool metadata parsing"
         )
+        SHOW_SUCCESS_NOTIFICATION: bool = Field(
+            default=True,
+            description="Show 'Reported to OpenPipe successfully' notification"
+        )
 
     def __init__(self):
         self.valves = self.Valves()
@@ -99,14 +103,6 @@ class Filter:
             
             if remaining_content:
                 thinking_blocks.append(remaining_content)
-        
-        # Pattern 2: <thinking>...</thinking> blocks (fallback)
-        thinking_pattern = r'<thinking>(.*?)</thinking>'
-        thinking_matches = re.findall(thinking_pattern, content, re.DOTALL)
-        
-        for match in thinking_matches:
-            thinking_content = match.strip()
-            thinking_blocks.append(thinking_content)
         
         return thinking_blocks
     
@@ -169,10 +165,6 @@ class Filter:
         # Remove <details type="reasoning" ...>...</details> blocks
         details_pattern = r'<details[^>]*type="reasoning"[^>]*>.*?</details>'
         cleaned_content = re.sub(details_pattern, '', content, flags=re.DOTALL)
-        
-        # Remove <thinking>...</thinking> blocks (fallback)
-        thinking_pattern = r'<thinking>.*?</thinking>'
-        cleaned_content = re.sub(thinking_pattern, '', cleaned_content, flags=re.DOTALL)
         
         # Clean up extra whitespace
         cleaned_content = re.sub(r'\n\s*\n\s*\n', '\n\n', cleaned_content)
@@ -692,14 +684,15 @@ class Filter:
             await self._send_to_openpipe(openpipe_payload)
             
             # Success feedback
-            await __event_emitter__({
-                "type": "status",
-                "data": {
-                    "description": "✅ Reported to OpenPipe successfully",
-                    "done": True,
-                    "hidden": False,
-                },
-            })
+            if self.valves.SHOW_SUCCESS_NOTIFICATION:
+                await __event_emitter__({
+                    "type": "status",
+                    "data": {
+                        "description": "✅ Reported to OpenPipe successfully",
+                        "done": True,
+                        "hidden": False,
+                    },
+                })
             
             self._log(f"Successfully reported with {len(processed['thinking_blocks'])} thinking blocks and {len(processed['tool_calls'])} tool calls")
             
