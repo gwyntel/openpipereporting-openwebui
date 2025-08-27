@@ -10,7 +10,6 @@ OpenPipe Reporting Filter v4.0 - Simplified with Enhanced Parsing
 
 Simplified filter that parses thinking blocks and tool use metadata properly.
 Features:
-- Parses <thinking> blocks into <think> tags
 - Extracts tool use metadata
 - Simplified configuration (only 3 valves vs 19 in v3)
 - Enhanced content processing for OpenWebUI display
